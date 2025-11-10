@@ -20,6 +20,7 @@ EPS = 1e-6
 class DistributionStats:
     mean: np.ndarray
     cov: np.ndarray
+    var: np.ndarray
 
 
 def sanitize_embeddings(embeddings: np.ndarray) -> np.ndarray:
@@ -41,17 +42,35 @@ def compute_stats(embeddings: np.ndarray) -> DistributionStats:
     mean = embeddings.mean(axis=0)
     cov = np.cov(embeddings, rowvar=False)
     cov += np.eye(cov.shape[0]) * EPS
-    return DistributionStats(mean=mean, cov=cov)
+    var = np.var(embeddings, axis=0)
+    var = np.clip(var, EPS, None)
+    return DistributionStats(mean=mean, cov=cov, var=var)
 
 
-def frechet_distance(stats_a: DistributionStats, stats_b: DistributionStats) -> float:
-    diff = stats_a.mean - stats_b.mean
-    cov_prod = stats_a.cov @ stats_b.cov
-    sqrt_cov_prod = linalg.sqrtm(cov_prod)
-    if np.iscomplexobj(sqrt_cov_prod):
-        sqrt_cov_prod = sqrt_cov_prod.real
-    trace_term = np.trace(stats_a.cov + stats_b.cov - 2 * sqrt_cov_prod)
-    return float(diff @ diff + trace_term)
+def frechet_distance(stats_a: DistributionStats, stats_b: DistributionStats) -> Dict[str, float]:
+    diff = stats_b.mean - stats_a.mean
+    mean_shift_sq = float(diff @ diff)
+
+    var_ratio = np.clip(stats_b.var / np.clip(stats_a.var, EPS, None), EPS, None)
+    scale_drift = np.sqrt(var_ratio) - 1.0
+    scale_component = float(np.sum(scale_drift ** 2))
+
+    value = mean_shift_sq + scale_component
+    return {
+        "frechet_distance": value,
+        "frechet_mean_shift": float(np.sqrt(mean_shift_sq)),
+        "frechet_scale_mean": float(np.mean(scale_drift)),
+        "frechet_scale_std": float(np.std(scale_drift)),
+    }
+
+
+def tail_drift(stats_a: DistributionStats, stats_b: DistributionStats) -> Dict[str, float]:
+    inv_var = 1.0 / np.clip(stats_a.var, EPS, None)
+    r = inv_var * (stats_b.var - stats_a.var)
+    return {
+        "tail_mean": float(np.mean(r)),
+        "tail_std": float(np.std(r)),
+    }
 
 
 def mahalanobis_distance(stats_a: DistributionStats, stats_b: DistributionStats) -> float:
@@ -64,7 +83,7 @@ def mahalanobis_distance(stats_a: DistributionStats, stats_b: DistributionStats)
 
 def sliced_wasserstein_distance(
     emb_a: np.ndarray, emb_b: np.ndarray, num_projections: int = 128, seed: int = 13
-) -> float:
+) -> Dict[str, float]:
     if emb_a.shape[1] != emb_b.shape[1]:
         raise ValueError("Embedding dimensions must match.")
     rng = np.random.default_rng(seed)
@@ -76,7 +95,12 @@ def sliced_wasserstein_distance(
         proj_a = emb_a @ direction
         proj_b = emb_b @ direction
         distances.append(wasserstein_distance(proj_a, proj_b))
-    return float(np.mean(distances))
+    distances = np.array(distances, dtype=np.float64)
+    return {
+        "swd_mean": float(distances.mean()),
+        "swd_std": float(distances.std()),
+        "swd_max": float(distances.max()),
+    }
 
 
 def build_descriptor_matrix(metric_records: Dict[str, Dict[str, float]], metric_order: Iterable[str]) -> np.ndarray:
@@ -100,3 +124,25 @@ def pca_project(matrix: np.ndarray, n_components: int = 2) -> np.ndarray:
     if matrix.shape[0] < n_components:
         raise ValueError("Need at least as many samples as PCA components.")
     return PCA(n_components=n_components).fit_transform(matrix)
+
+
+def linear_cka(mat_a: np.ndarray, mat_b: np.ndarray) -> float:
+    """Compute linear CKA similarity between two embedding matrices."""
+
+    if mat_a.ndim != 2 or mat_b.ndim != 2:
+        raise ValueError("CKA expects 2D matrices.")
+    if mat_a.shape[1] != mat_b.shape[1]:
+        raise ValueError("Embedding dimensions must match for CKA.")
+
+    def center(mat: np.ndarray) -> np.ndarray:
+        return mat - mat.mean(axis=0, keepdims=True)
+
+    a = center(mat_a)
+    b = center(mat_b)
+
+    xty = a.T @ b
+    numerator = np.linalg.norm(xty, ord="fro") ** 2
+    denom = np.linalg.norm(a.T @ a, ord="fro") * np.linalg.norm(b.T @ b, ord="fro")
+    if denom == 0:
+        return 0.0
+    return float(numerator / denom)

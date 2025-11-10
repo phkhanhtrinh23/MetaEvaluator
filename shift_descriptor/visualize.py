@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import Normalize
 from sklearn.decomposition import PCA
 
 
@@ -165,3 +166,59 @@ def plot_overlay_scatter(
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
+
+
+def plot_cka_heatmap(matrix: np.ndarray, labels: List[str], output_path: Path) -> None:
+    if matrix.shape[0] != matrix.shape[1]:
+        raise ValueError("CKA heatmap expects a square matrix.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(6, 5), dpi=120)
+    norm = Normalize(vmin=0.0, vmax=1.0)
+    plt.imshow(matrix, cmap="viridis", norm=norm)
+    plt.colorbar(label="CKA similarity")
+    plt.xticks(range(len(labels)), labels, rotation=45, ha="right")
+    plt.yticks(range(len(labels)), labels)
+    plt.title("CKA similarity across models")
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+
+
+def plot_architecture_alignment(summary: Dict[str, Dict], output_path: Path) -> None:
+    within = summary.get("within_family", {})
+    between = summary.get("between_family", {})
+    if not within and not between:
+        return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cols = 2 if between else 1
+    fig, axes = plt.subplots(1, cols, figsize=(6 * cols, 5), dpi=120)
+    if cols == 1:
+        axes = [axes]
+
+    if within:
+        families = list(within.keys())
+        means = [within[f]["mean_cka"] for f in families]
+        x = np.arange(len(families))
+        axes[0].bar(x, means, color="tab:blue")
+        axes[0].set_ylim(0, 1)
+        axes[0].set_title("Within-family mean CKA")
+        axes[0].set_ylabel("CKA")
+        axes[0].set_xticks(x, families, rotation=30, ha="right")
+    else:
+        axes[0].axis("off")
+
+    if between:
+        keys = list(between.keys())
+        means = [between[k]["mean_cka"] for k in keys]
+        x = np.arange(len(keys))
+        axes[-1].bar(x, means, color="tab:orange")
+        axes[-1].set_ylim(0, 1)
+        axes[-1].set_title("Between-family mean CKA")
+        axes[-1].set_ylabel("CKA")
+        axes[-1].set_xticks(x, keys, rotation=30, ha="right")
+    elif cols == 2:
+        axes[-1].axis("off")
+
+    plt.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)

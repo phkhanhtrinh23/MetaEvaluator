@@ -30,6 +30,9 @@ Key arguments:
 - `--context-fields`: Which JSON fields feed the “Additional context” slot (default: `evidence matched_contents text`).
 - `--use-plain-text`: Skip the template entirely and embed the raw `--text-field` value.
 - `--device`: Force computation on `cuda`, `cpu`, or `mps`.
+- `--lora-r`: Rank for on-the-fly LoRA adapters (default 8, set to 0 to disable).
+- `--metric-max-points`: Optional subsample cap for descriptor metrics (0 keeps every embedding row).
+- `--cka-max-points`: Cap (default 4096) on normalized samples used when measuring representational similarity (CKA/Procrustes).
 - Embedding `.npz` files are cached in `outputs/`. If a model/split pair already exists, the pipeline loads it instead of recomputing.
 - `--skip-embedding-plots`, `--scatter-max-points`, `--scatter-seed`: control the per-model embedding scatter figure (each subplot runs its own PCA over that model's train/test embeddings).
 - `--num-projections`: Controls the Monte-Carlo estimate of the sliced Wasserstein distance.
@@ -40,14 +43,18 @@ Key arguments:
 All artifacts land in `outputs/` by default:
 
 - `*_train_embeddings.npz` / `*_test_embeddings.npz`: pooled embeddings for each model and split.
-- `shift_descriptor_matrix.npy`: rows → models, cols → descriptor metrics.
+- `shift_descriptor_matrix.npy`: rows → models, cols → descriptor metrics (Frechet, Mahalanobis, Sliced Wasserstein, mean-shift norm, train anisotropy).
 - `shift_descriptor_pca.png`: 2D PCA projection for visual triage.
-- `all_models_embedding_scatter.png`: combined PCA overlay where each model/split is color/marker coded (like the example you referenced).
-- `per_model_embedding_scatter.png`: tiled scatter figure where each subplot shows a model-specific PCA projection of its train vs. test embeddings.
+- `all_models_embedding_scatter.png`: combined PCA overlay where each model/split is color/marker coded; embeddings are normalized per model before PCA.
+- `per_model_embedding_scatter.png`: tiled scatter figure where each subplot shows a model-specific PCA projection of its train vs. test splits (also using normalized embeddings).
 - `pairwise_similarity.json`: cosine similarity between each pair of descriptor vectors (capturing the “distribution similarity between each 2 out of 3 matrices” requirement).
+- `cka_similarity.json`: pairwise CKA scores between normalized embedding spaces.
+- `architecture_alignment.json`: aggregates of within/between architecture-family CKA scores to show how well clusters align with expected signatures.
+- `cka_heatmap.png`: visual heatmap of the pairwise CKA matrix.
+- `architecture_alignment.png`: bar-chart view of within/between-family mean CKA values.
+- `diagnostics/`: normalization sweeps (overlays, per-model scatters), cosine histograms, Procrustes residuals, and a mean-shift/anisotropy bar chart for quick inspection.
 - `shift_descriptor_summary.json`: consolidated metadata with file pointers, metric names, and sample counts.
 - When templating is active, the summary file also records the prompt template path that was used.
-- `per_model_embedding_scatter.png`: tiled scatter figure where each subplot shows a model-specific PCA projection of its train vs. test embeddings.
 
 ### Extra requirements for specialized backbones
 

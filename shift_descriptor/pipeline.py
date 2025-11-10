@@ -59,19 +59,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-ids",
         nargs="*",
-        default=[
-            "meta-llama/Llama-3.2-3B-Instruct",
-            "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                default=[
+            # Llama 3.2 family (Meta)
+            "meta-llama/Llama-3.2-1B",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "meta-llama/Llama-3.2-3B",
+
+            # TinyLlama (Llama-compatible)
+            "TinyLlama/TinyLlama_v1.1",
+            "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+
+            # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
+            "Qwen/Qwen2.5-Coder-3B",
+            "Qwen/Qwen2.5-Coder-3B-Instruct",
+            "Qwen/Qwen2.5-Coder-1.5B",
+            "Qwen/Qwen2.5-Coder-1.5B-Instruct",
             "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
-            "stabilityai/stablelm-2-1_6b",
-            "allenai/OLMo-1B-hf",
-            "internlm/internlm2-1_8b",
-            # "state-spaces/mamba-2.8b-slimpj",
-            # "RWKV/RWKV7-Goose-World3-1.5B-HF",
-            # "google/recurrentgemma-2b-it",
-            # "openbmb/MiniCPM-2B-sft-bf16",
-            "deepseek-ai/deepseek-coder-1.3b-instruct",
-            # "bigscience/bloomz-3b"
+
+            # StableLM-2 (Stability AI)
+            "stabilityai/stablelm-2-1_6b-chat",
+            "stabilityai/stablelm-2-zephyr-1_6b",
+
+            # OLMo (AI2)
+            "allenai/OLMo-1B",
+            "allenai/OLMo-1B-0724-hf",
+            "allenai/OLMo-2-0425-1B-Instruct",
+
+            # InternLM2 (Shanghai AI Lab)
+            "internlm/internlm2-chat-1_8b",
+
+            # DeepSeek Coder family
+            "deepseek-ai/deepseek-coder-1.3b-base",
+            "deepseek-ai/deepseek-coder-6.7b-base",
+            "deepseek-ai/deepseek-coder-6.7b-instruct",
         ],
         help="Optional list of model ids. When omitted, the curated defaults are used.",
     )

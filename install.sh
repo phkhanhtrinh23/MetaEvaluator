@@ -1,0 +1,1 @@
+pip install "mamba-ssm[causal-conv1d]" huggingface_hub safetensors tokenizers sentencepiece protobuf accelerate

@@ -1,23 +1,3 @@
-{
-  "Llama-3.2-3B-Instruct__TinyLlama-1.1B-Chat-v1.0": 0.9998983810282579,
-  "Llama-3.2-3B-Instruct__XiYanSQL-QwenCoder-3B-2502": 0.9887704377940979,
-  "Llama-3.2-3B-Instruct__stablelm-2-1_6b": 0.8680668015254736,
-  "Llama-3.2-3B-Instruct__OLMo-1B-hf": 0.9815184129738114,
-  "Llama-3.2-3B-Instruct__internlm2-1_8b": 0.8473221740262511,
-  "Llama-3.2-3B-Instruct__deepseek-coder-1.3b-instruct": 0.9671921581017385,
-  "TinyLlama-1.1B-Chat-v1.0__XiYanSQL-QwenCoder-3B-2502": 0.986539550156087,
-  "TinyLlama-1.1B-Chat-v1.0__stablelm-2-1_6b": 0.8609013699423298,
-  "TinyLlama-1.1B-Chat-v1.0__OLMo-1B-hf": 0.9841467606024236,
-  "TinyLlama-1.1B-Chat-v1.0__internlm2-1_8b": 0.8396651483828314,
-  "TinyLlama-1.1B-Chat-v1.0__deepseek-coder-1.3b-instruct": 0.9707154843173822,
-  "XiYanSQL-QwenCoder-3B-2502__stablelm-2-1_6b": 0.9325090674776375,
-  "XiYanSQL-QwenCoder-3B-2502__OLMo-1B-hf": 0.941897946588797,
-  "XiYanSQL-QwenCoder-3B-2502__internlm2-1_8b": 0.9171728525182086,
-  "XiYanSQL-QwenCoder-3B-2502__deepseek-coder-1.3b-instruct": 0.9183657902591676,
-  "stablelm-2-1_6b__OLMo-1B-hf": 0.7570195438432168,
-  "stablelm-2-1_6b__internlm2-1_8b": 0.9991851490816667,
-  "stablelm-2-1_6b__deepseek-coder-1.3b-instruct": 0.7134669664486375,
-  "OLMo-1B-hf__internlm2-1_8b": 0.7300308993901925,
-  "OLMo-1B-hf__deepseek-coder-1.3b-instruct": 0.9979331005448573,
-  "internlm2-1_8b__deepseek-coder-1.3b-instruct": 0.6846048554755848
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:fbdf9e5a3169c651a83e189d4d813ea754ad67e5d67d60ff9e0dcc571332f951
+size 1416

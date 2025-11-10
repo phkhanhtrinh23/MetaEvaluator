@@ -70,7 +70,6 @@ def parse_args() -> argparse.Namespace:
             "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
 
             # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
-            "Qwen/Qwen2.5-Coder-3B",
             "Qwen/Qwen2.5-Coder-3B-Instruct",
             "Qwen/Qwen2.5-Coder-1.5B",
             "Qwen/Qwen2.5-Coder-1.5B-Instruct",
@@ -88,7 +87,7 @@ def parse_args() -> argparse.Namespace:
             # InternLM2 (Shanghai AI Lab)
             "internlm/internlm2-chat-1_8b",
 
-            # DeepSeek Coder family
+            # # DeepSeek Coder family
             "deepseek-ai/deepseek-coder-1.3b-base",
             "deepseek-ai/deepseek-coder-6.7b-base",
             "deepseek-ai/deepseek-coder-6.7b-instruct",
@@ -177,6 +176,11 @@ REMOTE_REQUIRED_MODELS = {
     "internlm/internlm2-1_8b",
 }
 
+DEEPSEEK_67B_MODELS = {
+    "deepseek-ai/deepseek-coder-6.7b-base",
+    "deepseek-ai/deepseek-coder-6.7b-instruct",
+}
+
 ARCH_FAMILY_EXPECTATIONS = {
     "transformer": "embeddings cluster in nearby subspace",
     "rwkv": "elongated manifold with temporal correlation",
@@ -214,6 +218,46 @@ def infer_arch_family(model_id: str) -> str:
     if "recurrent" in lower or "gemma" in lower:
         return "recurrent"
     return "transformer"
+
+
+def _flash_attention_available() -> bool:
+    try:  # pragma: no cover - optional dependency
+        import flash_attn  # type: ignore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _configure_specialized_loader(spec: ModelSpec, cfg: EmbeddingConfig) -> None:
+    if spec.model_id not in DEEPSEEK_67B_MODELS:
+        return
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"{spec.model_id} requires a CUDA device for 4-bit loading. Please choose a GPU-enabled environment."
+        )
+    try:  # pragma: no cover - optional dependency
+        from transformers import BitsAndBytesConfig
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "bitsandbytes is required to load Deepseek 6.7B models in 4-bit mode. Install via `pip install bitsandbytes`."
+        ) from exc
+
+    cfg.dtype = torch.bfloat16
+    cfg.tokenizer_kwargs.setdefault("use_fast", True)
+    cfg.model_kwargs.setdefault(
+        "quantization_config",
+        BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        ),
+    )
+    cfg.model_kwargs.setdefault("device_map", "auto")
+    cfg.model_kwargs.setdefault("low_cpu_mem_usage", True)
+    if _flash_attention_available():
+        cfg.model_kwargs.setdefault("attn_implementation", "flash_attention_2")
 
 
 def normalize_model_embeddings(train_arr: np.ndarray, test_arr: np.ndarray, eps: float = 1e-6) -> tuple[np.ndarray, np.ndarray]:
@@ -401,6 +445,8 @@ def main() -> None:
     failures: Dict[str, str] = {}
 
     for spec in specs:
+        clear_cuda_cache()
+
         print(f"\nProcessing model: {spec.model_id}")
         embed_cfg = EmbeddingConfig(
             model_id=spec.model_id,
@@ -411,6 +457,7 @@ def main() -> None:
             revision=spec.revision,
             lora_r=args.lora_r if args.lora_r and args.lora_r > 0 else None,
         )
+        _configure_specialized_loader(spec, embed_cfg)
 
         default_train_path = output_dir / f"{spec.name}_train_embeddings.npz"
         default_test_path = output_dir / f"{spec.name}_test_embeddings.npz"
@@ -419,30 +466,32 @@ def main() -> None:
         test_emb_path = Path(cached_embed.get("test_embeddings", default_test_path))
         use_cached_descriptor = train_emb_path.exists() and test_emb_path.exists()
 
+        extractor: EmbeddingExtractor | None = None
         try:
-            extractor = None
-            if not (train_emb_path.exists() and test_emb_path.exists()):
-                extractor = EmbeddingExtractor(embed_cfg, device=device)
-            elif use_cached_descriptor:
-                print(f"  Using cached embeddings for {spec.name}")
+            try:
+                if not (train_emb_path.exists() and test_emb_path.exists()):
+                    extractor = EmbeddingExtractor(embed_cfg, device=device)
+                elif use_cached_descriptor:
+                    print(f"  Using cached embeddings for {spec.name}")
 
-            if train_emb_path.exists():
-                train_embeddings = np.load(train_emb_path)["embeddings"]
-            else:
-                train_embeddings = extractor.encode(tqdm(train_texts, desc=f"{spec.name} train", leave=False))
-                extractor.save_embeddings(train_embeddings, train_emb_path)
-                clear_cuda_cache()
+                if train_emb_path.exists():
+                    train_embeddings = np.load(train_emb_path)["embeddings"]
+                else:
+                    train_embeddings = extractor.encode(tqdm(train_texts, desc=f"{spec.name} train", leave=False))
+                    extractor.save_embeddings(train_embeddings, train_emb_path)
+                    clear_cuda_cache()
 
-            if test_emb_path.exists():
-                test_embeddings = np.load(test_emb_path)["embeddings"]
-            else:
-                test_embeddings = extractor.encode(tqdm(test_texts, desc=f"{spec.name} test", leave=False))
-                extractor.save_embeddings(test_embeddings, test_emb_path)
-                clear_cuda_cache()
-
-            if extractor is not None:
-                del extractor
-                clear_cuda_cache()
+                if test_emb_path.exists():
+                    test_embeddings = np.load(test_emb_path)["embeddings"]
+                else:
+                    test_embeddings = extractor.encode(tqdm(test_texts, desc=f"{spec.name} test", leave=False))
+                    extractor.save_embeddings(test_embeddings, test_emb_path)
+                    clear_cuda_cache()
+            finally:
+                if extractor is not None:
+                    extractor.shutdown()
+                    extractor = None
+                    clear_cuda_cache()
 
             train_embeddings = sanitize_embeddings(train_embeddings).astype(np.float32, copy=False)
             test_embeddings = sanitize_embeddings(test_embeddings).astype(np.float32, copy=False)
@@ -495,6 +544,7 @@ def main() -> None:
             metric_records.pop(spec.name, None)
             embedding_paths.pop(spec.name, None)
             scatter_data.pop(spec.name, None)
+            clear_cuda_cache()
             continue
 
     metric_order = [
@@ -630,23 +680,23 @@ def main() -> None:
             with cosine_pairs_path.open("w", encoding="utf-8") as f:
                 json.dump(pair_cos, f, indent=2)
 
-            procrustes_scores = compute_procrustes(view, cka_rng)
-            procrustes_path = diag_dir / f"{mode}_procrustes.json"
-            with procrustes_path.open("w", encoding="utf-8") as f:
-                json.dump(procrustes_scores, f, indent=2)
+            # procrustes_scores = compute_procrustes(view, cka_rng)
+            # procrustes_path = diag_dir / f"{mode}_procrustes.json"
+            # with procrustes_path.open("w", encoding="utf-8") as f:
+            #     json.dump(procrustes_scores, f, indent=2)
 
-            if mode == "per_model":
-                per_model_cosine_plot_path = diag_dir / "per_model_cosine_hist.png"
-                if not plot_pairwise_cosines(pair_cos, per_model_cosine_plot_path):
-                    per_model_cosine_plot_path = None
-                per_model_cosine_pairs_json = cosine_pairs_path
+            # if mode == "per_model":
+            #     per_model_cosine_plot_path = diag_dir / "per_model_cosine_hist.png"
+            #     if not plot_pairwise_cosines(pair_cos, per_model_cosine_plot_path):
+            #         per_model_cosine_plot_path = None
+            #     per_model_cosine_pairs_json = cosine_pairs_path
 
             diagnostics_summary[mode] = {
                 "overlay_path": str(overlay_norm_path),
                 "per_model_path": str(per_model_norm_path),
                 "cosine_hist_path": str(cosine_hist_path),
                 "cosine_pairs_path": str(cosine_pairs_path),
-                "procrustes_path": str(procrustes_path),
+                # "procrustes_path": str(procrustes_path),
                 "within_cosine_pairs": int(len(within_cos)),
                 "between_cosine_pairs": int(len(between_cos)),
             }

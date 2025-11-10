@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import gc
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -56,6 +57,8 @@ class EmbeddingConfig:
     revision: str | None = None
     dtype: torch.dtype | None = None
     lora_r: int | None = None
+    tokenizer_kwargs: Dict[str, Any] = field(default_factory=dict)
+    model_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 
 class EmbeddingExtractor:
@@ -70,21 +73,32 @@ class EmbeddingExtractor:
         elif torch_dtype is None:
             torch_dtype = torch.float32
 
+        tokenizer_kwargs = dict(config.tokenizer_kwargs or {})
+        if config.revision:
+            tokenizer_kwargs.setdefault("revision", config.revision)
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.model_id,
-            revision=config.revision,
             trust_remote_code=config.trust_remote_code,
+            **tokenizer_kwargs,
         )
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token or self.tokenizer.unk_token
 
+        model_kwargs = dict(config.model_kwargs or {})
+        if "torch_dtype" not in model_kwargs and torch_dtype is not None:
+            model_kwargs["torch_dtype"] = torch_dtype
+        if config.revision:
+            model_kwargs.setdefault("revision", config.revision)
+        uses_device_map = "device_map" in model_kwargs and model_kwargs["device_map"] not in (None, "cpu")
+
         self.model = AutoModelForCausalLM.from_pretrained(
             config.model_id,
-            revision=config.revision,
             trust_remote_code=config.trust_remote_code,
-            torch_dtype=torch_dtype,
+            **model_kwargs,
         )
-        self.model.to(self.device)
+        if not uses_device_map:
+            self.model.to(self.device)
+        self.model_device = getattr(self.model, "device", self.device)
         self.model.eval()
         if hasattr(self.model.config, "use_cache"):
             self.model.config.use_cache = False
@@ -120,7 +134,7 @@ class EmbeddingExtractor:
             return_tensors="pt",
             max_length=self.cfg.max_length,
         )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self.model_device) for k, v in inputs.items()}
         outputs = self.model(**inputs, output_hidden_states=getattr(self.model.config, "output_hidden_states", False))
         hidden, is_sequence = self._select_hidden_tensor(outputs, batch_size=inputs["input_ids"].shape[0], seq_len=inputs["input_ids"].shape[1])
 
@@ -131,6 +145,7 @@ class EmbeddingExtractor:
             pooled = summed / counts
         else:
             pooled = hidden
+        pooled = torch.nan_to_num(pooled, nan=0.0, posinf=1e4, neginf=-1e4)
         return pooled.detach().cpu().float().numpy()
 
     def _select_hidden_tensor(self, outputs, batch_size: int, seq_len: int) -> Tuple[torch.Tensor, bool]:
@@ -206,3 +221,11 @@ class EmbeddingExtractor:
     def save_embeddings(self, embeddings: np.ndarray, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(output_path, embeddings=embeddings)
+
+    def shutdown(self) -> None:
+        """Release model resources to avoid lingering GPU allocations."""
+        self.model = None
+        self.tokenizer = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

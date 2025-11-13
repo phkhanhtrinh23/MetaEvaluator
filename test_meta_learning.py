@@ -1,120 +1,117 @@
-# ====== Minimal First-Order MAML (Sinusoid Few-Shot Regression) ======
-# Setup: Each task T is y = A * sin(x + phi). We learn an init θ so that
-# ONE small gradient step on K support points fits the task, and we evaluate on query points.
+import random
+import sqlite3
 
-import math, random
+import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
-# ---- Task distribution: y = A sin(x + phi) ----
-def sample_task():
-    A = random.uniform(0.1, 5.0)
-    phi = random.uniform(0.0, math.pi)
-    return A, phi
+from fusion_sql.descriptors import DEFAULT_FEATURE_ORDER, ShiftDescriptor
+from fusion_sql.evaluation import build_prediction_records
+from fusion_sql.meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescriptorTask
+from fusion_sql.model import FusionSQL
 
-def sample_data(A, phi, n):
-    x = torch.empty(n, 1).uniform_(-5.0, 5.0)
-    y = A * torch.sin(x + phi)
-    return x, y
 
-# ---- Small MLP and a functional forward that takes explicit params ----
-class MLP(nn.Module):
-    def __init__(self, in_dim=1, hid=40, out_dim=1):
-        super().__init__()
-        self.fc1 = nn.Linear(in_dim, hid)
-        self.fc2 = nn.Linear(hid, hid)
-        self.fc3 = nn.Linear(hid, out_dim)
+FEATURES = DEFAULT_FEATURE_ORDER
 
-def forward_with(params, x):
-    W1,b1,W2,b2,W3,b3 = params
-    h1 = torch.relu(x @ W1.T + b1)
-    h2 = torch.relu(h1 @ W2.T + b2)
-    return h2 @ W3.T + b3
 
-def get_param_list(model):
-    return [model.fc1.weight, model.fc1.bias,
-            model.fc2.weight, model.fc2.bias,
-            model.fc3.weight, model.fc3.bias]
+def _descriptor_from_vector(model: str, split_a: str, split_b: str, vector: torch.Tensor) -> ShiftDescriptor:
+    return ShiftDescriptor(
+        model_name=model,
+        split_a=split_a,
+        split_b=split_b,
+        features={name: float(value) for name, value in zip(FEATURES, vector.tolist())},
+    )
 
-# ---- One inner (task) step: θ' = θ - α ∇θ L_sup(θ) (First-Order: no 2nd derivatives) ----
-def inner_adapt(params, x_sup, y_sup, lr_inner=0.01):
-    y_hat = forward_with(params, x_sup)
-    loss  = F.mse_loss(y_hat, y_sup)
-    grads = torch.autograd.grad(loss, params, create_graph=False)  # FOMAML
-    new_params = [p - lr_inner*g for p,g in zip(params, grads)]
-    # ensure they require grad for the meta-backward
-    new_params = [p.clone().detach().requires_grad_(True) for p in new_params]
-    return new_params, loss.detach()
 
-# ---- Meta-training loop ----
-def meta_train(steps=2000, tasks_per_batch=20, K=10, Q=10, lr_inner=0.01, lr_meta=1e-3, print_every=200):
-    torch.manual_seed(0); random.seed(0)
-    model = MLP()
-    meta_optim = torch.optim.Adam(model.parameters(), lr=lr_meta)
+def _build_synthetic_tasks(num_tasks: int = 6) -> list[ShiftDescriptorTask]:
+    rng = torch.Generator().manual_seed(0)
+    tasks: list[ShiftDescriptorTask] = []
 
-    for step in range(1, steps+1):
-        meta_optim.zero_grad()
-        meta_loss = 0.0
+    def target_fn(x: torch.Tensor) -> torch.Tensor:
+        weights = torch.tensor([0.4, -0.25, 0.1, 0.05, -0.02, 0.18])
+        return (x * weights).sum(dim=-1, keepdim=True) + 0.1
 
-        # Build one meta-batch of tasks
-        for _ in range(tasks_per_batch):
-            A, phi = sample_task()
-            x_sup, y_sup = sample_data(A, phi, K)
-            x_qry, y_qry = sample_data(A, phi, Q)
+    for idx in range(num_tasks):
+        base = torch.randn((1, len(FEATURES)), generator=rng) * 0.5
+        offset = torch.randn((1, len(FEATURES)), generator=rng) * 0.1
+        support_vec = base + offset
+        query_vec = base - offset
+        transfer_vec = base + 2 * offset
 
-            # Start from current meta-params θ
-            params = [p for p in get_param_list(model)]
-            params = [p.clone().detach().requires_grad_(True) for p in params]
+        support_label = target_fn(support_vec)
+        query_label = target_fn(query_vec)
+        transfer_label = target_fn(transfer_vec)
 
-            # Inner step on support
-            adapted_params, _ = inner_adapt(params, x_sup, y_sup, lr_inner)
+        support_desc = _descriptor_from_vector(f"model{idx}", "meta_train", "meta_val", support_vec.squeeze(0))
+        query_desc = _descriptor_from_vector(f"model{idx}", "meta_train", "meta_test", query_vec.squeeze(0))
+        transfer_desc = _descriptor_from_vector(f"model{idx}", "meta_train", "dev", transfer_vec.squeeze(0))
 
-            # Query loss at θ' (post-adaptation)
-            y_hat_q = forward_with(adapted_params, x_qry)
-            task_loss = F.mse_loss(y_hat_q, y_qry)
-            meta_loss = meta_loss + task_loss
+        tasks.append(
+            ShiftDescriptorTask.from_descriptors(
+                model_name=f"model{idx}",
+                support=support_desc,
+                support_label=float(support_label.item()),
+                query=query_desc,
+                query_label=float(query_label.item()),
+                transfer=transfer_desc,
+                transfer_label=float(transfer_label.item()),
+                device=torch.device("cpu"),
+                feature_order=FEATURES,
+            )
+        )
+    return tasks
 
-        # Average over tasks and update θ (first-order gradient through θ only)
-        meta_loss = meta_loss / tasks_per_batch
-        meta_loss.backward()
-        meta_optim.step()
 
-        if step % print_every == 0:
-            print(f"[meta-step {step:4d}] meta-loss {meta_loss.item():.4f}")
+def test_fusionsql_forward_matches_functional():
+    model = FusionSQL(input_dim=len(FEATURES), dropout=0.0)
+    model.eval()
+    torch.manual_seed(0)
+    inputs = torch.randn(4, len(FEATURES))
+    direct = model(inputs)
+    params = [p.clone().detach().requires_grad_(True) for p in model.parameter_list()]
+    functional = model.functional_forward(inputs, params)
+    torch.testing.assert_close(direct, functional)
 
-    return model
 
-# ---- Meta-test (inference): freeze θ*, do ONLY the inner step(s) on a NEW task ----
-def meta_test(model, K=10, lr_inner=0.01, inner_steps=1):
-    # fresh unseen task
-    A, phi = sample_task()
-    x_plot = torch.linspace(-5, 5, 200).unsqueeze(1)
-    y_true = A * torch.sin(x_plot + phi)
+def test_meta_learner_recovers_synthetic_accuracy():
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
 
-    # BEFORE adaptation
-    with torch.no_grad():
-        # quick forward using model params directly
-        W1, b1 = model.fc1.weight, model.fc1.bias
-        W2, b2 = model.fc2.weight, model.fc2.bias
-        W3, b3 = model.fc3.weight, model.fc3.bias
-        y_pred_before = forward_with([W1,b1,W2,b2,W3,b3], x_plot)
+    tasks = _build_synthetic_tasks()
+    model = FusionSQL(input_dim=len(FEATURES), dropout=0.0)
+    cfg = MetaLearningConfig(
+        inner_lr=0.1,
+        outer_lr=1e-2,
+        inner_steps=3,
+        tasks_per_batch=3,
+        num_epochs=180,
+        eval_inner_steps=5,
+        device="cpu",
+    )
+    learner = FusionSQLMetaLearner(model, cfg)
+    learner.meta_train(tasks)
+    transfer_results = learner.evaluate_transfer(tasks)
+    mean_mae = np.mean([entry["mae"] for entry in transfer_results])
+    assert mean_mae < 0.05, f"Expected MAE < 0.05, got {mean_mae:.4f}"
 
-    # Build tiny support set and adapt from θ*
-    x_sup, y_sup = sample_data(A, phi, K)
-    params = [p.clone().detach().requires_grad_(True) for p in get_param_list(model)]
-    for _ in range(inner_steps):
-        params, _ = inner_adapt(params, x_sup, y_sup, lr_inner)
 
-    with torch.no_grad():
-        y_pred_after = forward_with(params, x_plot)
+def test_build_prediction_records_execution(tmp_path):
+    db_file = tmp_path / "demo.sqlite"
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE student(age INT)")
+    conn.executemany("INSERT INTO student(age) VALUES (?)", [(18,), (19,), (20,)])
+    conn.commit()
+    conn.close()
 
-    mse_before = F.mse_loss(y_pred_before, y_true).item()
-    mse_after  = F.mse_loss(y_pred_after,  y_true).item()
-    print(f"[meta-test] A={A:.3f}, phi={phi:.3f} | MSE before: {mse_before:.4f} -> after: {mse_after:.4f}")
-
-# ===== Run it =====
-if __name__ == "__main__":
-    model = meta_train(steps=2000, tasks_per_batch=20, K=10, Q=10, lr_inner=0.01, lr_meta=1e-3, print_every=200)
-    # Test on a brand-new task: do 1 inner step, then evaluate
-    meta_test(model, K=10, lr_inner=0.01, inner_steps=1)
+    samples = [
+        {
+            "db_id": "demo",
+            "db_path": str(db_file),
+            "question": "Sum ages",
+            "sql": "SELECT SUM(age) FROM student",
+        }
+    ]
+    preds = ["SELECT SUM(age) FROM student"]
+    metrics, records = build_prediction_records(samples, preds, [0])
+    assert metrics["execution_accuracy"] == 1.0
+    assert records[0]["execution_correct"] is True

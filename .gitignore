@@ -1,1 +1,7 @@
 *.npz
+data/database
+data/test_database
+data/*.zip
+__pycache__/
+*/__pycache__
+*.pyc

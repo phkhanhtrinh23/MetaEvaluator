@@ -80,12 +80,12 @@ def test_meta_learner_recovers_synthetic_accuracy():
     tasks = _build_synthetic_tasks()
     model = FusionSQL(input_dim=len(FEATURES), dropout=0.0)
     cfg = MetaLearningConfig(
-        inner_lr=0.1,
-        outer_lr=1e-2,
-        inner_steps=3,
+        inner_lr=0.01,
+        outer_lr=1e-3,
+        inner_steps=1,
         tasks_per_batch=3,
-        num_epochs=180,
-        eval_inner_steps=5,
+        num_epochs=320,
+        eval_inner_steps=3,
         device="cpu",
     )
     learner = FusionSQLMetaLearner(model, cfg)

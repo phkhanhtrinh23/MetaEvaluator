@@ -54,12 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-ids", nargs="*", default=[
             # Llama 3.2 family (Meta)
             "meta-llama/Llama-3.2-1B",
-            # "meta-llama/Llama-3.2-1B-Instruct",
-            # "meta-llama/Llama-3.2-3B",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "meta-llama/Llama-3.2-3B",
 
-            # # TinyLlama (Llama-compatible)
-            # "TinyLlama/TinyLlama_v1.1",
-            # "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+            # TinyLlama (Llama-compatible)
+            "TinyLlama/TinyLlama_v1.1",
+            "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
 
             # # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
             # "Qwen/Qwen2.5-Coder-3B-Instruct",

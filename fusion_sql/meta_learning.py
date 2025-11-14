@@ -81,9 +81,11 @@ class FusionSQLMetaLearner:
         self.model = model.to(self.device)
         self.feature_order = DEFAULT_FEATURE_ORDER
 
-    def _prepare_params(self) -> List[torch.Tensor]:
+    def _prepare_params(self, *, detach: bool = False) -> List[torch.Tensor]:
         params = [p for p in self.model.parameter_list()]
-        return FusionSQL.clone_parameters(params)
+        if detach:
+            return FusionSQL.clone_parameters(params)
+        return list(params)
 
     def _inner_step(self, params: List[torch.Tensor], descriptor: torch.Tensor, label: torch.Tensor) -> List[torch.Tensor]:
         preds = self.model.functional_forward(descriptor, params)
@@ -100,7 +102,7 @@ class FusionSQLMetaLearner:
                 updated.append(param)
             else:
                 updated.append(param - self.cfg.inner_lr * grad)
-        return FusionSQL.clone_parameters(updated)
+        return updated
 
     def meta_train(self, tasks: Sequence[ShiftDescriptorTask]) -> List[float]:
         if not tasks:
@@ -114,7 +116,7 @@ class FusionSQLMetaLearner:
             optimizer.zero_grad()
 
             for task in batch:
-                params = self._prepare_params()
+                params = self._prepare_params(detach=False)
                 for _ in range(self.cfg.inner_steps):
                     params = self._inner_step(params, task.support_descriptor, task.support_label)
                 preds = self.model.functional_forward(task.query_descriptor, params)
@@ -136,7 +138,7 @@ class FusionSQLMetaLearner:
         *,
         inner_steps: int | None = None,
     ) -> torch.Tensor:
-        params = self._prepare_params()
+        params = self._prepare_params(detach=True)
         steps = inner_steps or self.cfg.eval_inner_steps or self.cfg.inner_steps
         for _ in range(steps):
             params = self._inner_step(params, support_descriptor, support_label)

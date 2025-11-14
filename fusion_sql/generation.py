@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Sequence
 
 import torch
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from shift_descriptor.config import ModelSpec
@@ -87,7 +88,7 @@ class SQLGenerator:
 
     def generate(self, prompts: Sequence[str]) -> List[str]:
         outputs: List[str] = []
-        for prompt in prompts:
+        for prompt in tqdm(prompts, desc="Generating SQL..."):
             inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 generated = self.model.generate(
@@ -102,8 +103,8 @@ class SQLGenerator:
                 )
             gen_ids = generated[0, inputs["input_ids"].shape[1] :]
             text = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
-            print(f"[SQLGenerator] Prompt: {prompt}")
-            print(f"[SQLGenerator] Generated: {text.strip()}")
+            # print(f"[SQLGenerator] Prompt: {prompt}")
+            # print(f"[SQLGenerator] Generated: {text.strip()}")
             outputs.append(text.strip())
         return outputs
 

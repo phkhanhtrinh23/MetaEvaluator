@@ -86,8 +86,9 @@ def parse_args() -> argparse.Namespace:
             # "deepseek-ai/deepseek-coder-6.7b-instruct",
         ], help="Optional HF model ids (alias=model_id or alias=model_id:remote).")
     parser.add_argument("--test-model-ids", 
-                        nargs="*", 
-                        default=["meta-llama/Llama-3.2-3B-Instruct"], 
+                        nargs="*",
+                        default=["meta-llama/Llama-3.2-3B-Instruct",
+                                 "deepseek-ai/deepseek-coder-1.3b-base"], 
                         help="Extra model ids evaluated only after meta-training.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
@@ -317,7 +318,7 @@ def main() -> None:
     )
     train_prompts, train_samples = maybe_cap_examples(train_prompts, train_samples, args.max_train_samples)
     
-    train_prompts, train_samples = train_prompts[:2000], train_samples[:2000]
+    train_prompts, train_samples = train_prompts[:500], train_samples[:500]
 
     splits = build_prompt_splits(train_prompts, samples=train_samples, ratios=args.split_ratios, seed=args.split_seed)
 
@@ -330,7 +331,7 @@ def main() -> None:
         text_field=args.text_field,
     )
     dev_prompts, dev_samples = maybe_cap_examples(dev_prompts, dev_samples, args.max_dev_samples)
-    dev_prompts, dev_samples = dev_prompts[:500], dev_samples[:500]
+    dev_prompts, dev_samples = dev_prompts[:100], dev_samples[:100]
     
     dev_split = create_dev_split(dev_prompts, dev_samples)
 

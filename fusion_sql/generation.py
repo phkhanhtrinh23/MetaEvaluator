@@ -109,8 +109,13 @@ class SQLGenerator:
         return outputs
 
     def shutdown(self) -> None:
-        del self.model
+        if hasattr(self, "model") and self.model is not None:
+            del self.model
+        if hasattr(self, "tokenizer"):
+            del self.tokenizer
         gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _apply_lora(self, model: torch.nn.Module, rank: int) -> torch.nn.Module:
         try:

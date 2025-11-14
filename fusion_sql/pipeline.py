@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
 
 import numpy as np
+import torch
 
 from shift_descriptor.config import ModelSpec, default_model_specs
 
@@ -212,9 +213,34 @@ def evaluate_split_predictions(
         "model": model_name,
         "split": split.name,
         "metrics": metrics,
+        "sample_count": len(records),
         "predictions": records,
     }
     save_json(output_root / f"{split.name}.json", payload)
+    return metrics
+
+
+def maybe_load_cached_metrics(model_dir: Path, split_name: str, expected_samples: int) -> Dict[str, float] | None:
+    path = model_dir / f"{split_name}.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    records = payload.get("predictions")
+    sample_count = payload.get("sample_count")
+    if isinstance(records, list):
+        count = len(records)
+    elif isinstance(sample_count, int):
+        count = sample_count
+    else:
+        return None
+    if count != expected_samples:
+        return None
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
     return metrics
 
 
@@ -238,7 +264,6 @@ def run_inference_for_models(
     for model in models:
         model_name = model.alias or model.name
         print(f"[FusionSQL] Generating SQL for {model_name}...")
-        generator = SQLGenerator(model, gen_settings, device=device, lora_r=lora_r)
         model_dir = predictions_root / sanitize_model_name(model)
         model_dir.mkdir(exist_ok=True)
         model_accs: Dict[str, float] = {}
@@ -247,17 +272,29 @@ def run_inference_for_models(
             (meta_test_key, splits["meta_test"]),
             (dev_key, dev_split),
         ]
-        for key_name, split in split_plan:
-            metrics = evaluate_split_predictions(
-                generator,
-                split,
-                model_dir,
-                model_name,
-                db_root=db_root,
-            )
-            model_accs[key_name] = metrics["execution_accuracy"]
+        generator: SQLGenerator | None = None
+        try:
+            for key_name, split in split_plan:
+                cached = maybe_load_cached_metrics(model_dir, split.name, len(split.indices))
+                if cached is not None:
+                    model_accs[key_name] = cached["execution_accuracy"]
+                    continue
+                if generator is None:
+                    generator = SQLGenerator(model, gen_settings, device=device, lora_r=lora_r)
+                metrics = evaluate_split_predictions(
+                    generator,
+                    split,
+                    model_dir,
+                    model_name,
+                    db_root=db_root,
+                )
+                model_accs[key_name] = metrics["execution_accuracy"]
+        finally:
+            if generator is not None:
+                generator.shutdown()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         accuracy_summary[model_name] = model_accs
-        generator.shutdown()
     return accuracy_summary
 
 

@@ -62,11 +62,11 @@ def parse_args() -> argparse.Namespace:
             "TinyLlama/TinyLlama_v1.1",
             "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
 
-            # # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
-            # "Qwen/Qwen2.5-Coder-3B-Instruct",
-            # "Qwen/Qwen2.5-Coder-1.5B",
-            # "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-            # "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+            # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
+            "Qwen/Qwen2.5-Coder-3B-Instruct",
+            "Qwen/Qwen2.5-Coder-1.5B",
+            "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+            "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
 
             # # StableLM-2 (Stability AI)
             # "stabilityai/stablelm-2-1_6b-chat",
@@ -85,6 +85,10 @@ def parse_args() -> argparse.Namespace:
             # "deepseek-ai/deepseek-coder-6.7b-base",
             # "deepseek-ai/deepseek-coder-6.7b-instruct",
         ], help="Optional HF model ids (alias=model_id or alias=model_id:remote).")
+    parser.add_argument("--test-model-ids", 
+                        nargs="*", 
+                        default=["meta-llama/Llama-3.2-3B-Instruct"], 
+                        help="Extra model ids evaluated only after meta-training.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
     parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank (<=0 disables).")
@@ -102,7 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inner-lr", type=float, default=0.01, help="Inner-loop lr.")
     parser.add_argument("--outer-lr", type=float, default=1e-3, help="Outer-loop lr.")
     parser.add_argument("--inner-steps", type=int, default=1, help="Inner updates per task.")
-    parser.add_argument("--epochs", type=int, default=200, help="Meta-training epochs.")
+    parser.add_argument("--epochs", type=int, default=500, help="Meta-training epochs.")
     parser.add_argument("--tasks-per-batch", type=int, default=4, help="Tasks per meta-batch.")
     parser.add_argument("--device", default=None, help="Torch device override.")
     parser.add_argument("--meta-val-key", default="meta_val", help="Accuracy key for meta validation split.")
@@ -313,7 +317,7 @@ def main() -> None:
     )
     train_prompts, train_samples = maybe_cap_examples(train_prompts, train_samples, args.max_train_samples)
     
-    train_prompts, train_samples = train_prompts[:100], train_samples[:100]
+    train_prompts, train_samples = train_prompts[:2000], train_samples[:2000]
 
     splits = build_prompt_splits(train_prompts, samples=train_samples, ratios=args.split_ratios, seed=args.split_seed)
 
@@ -326,11 +330,13 @@ def main() -> None:
         text_field=args.text_field,
     )
     dev_prompts, dev_samples = maybe_cap_examples(dev_prompts, dev_samples, args.max_dev_samples)
-    dev_prompts, dev_samples = dev_prompts[:50], dev_samples[:50]
+    dev_prompts, dev_samples = dev_prompts[:500], dev_samples[:500]
     
     dev_split = create_dev_split(dev_prompts, dev_samples)
 
-    models = parse_model_specs(args.model_ids)
+    train_models = parse_model_specs(args.model_ids)
+    test_models = parse_model_specs(args.test_model_ids) if args.test_model_ids else []
+    all_models = train_models + [m for m in test_models if m not in train_models]
 
     gen_settings = GenerationSettings(
         max_new_tokens=args.gen_max_new_tokens,
@@ -339,7 +345,7 @@ def main() -> None:
         repetition_penalty=args.gen_repetition_penalty,
     )
     accuracy_map = run_inference_for_models(
-        models,
+        all_models,
         splits,
         dev_split,
         output_dir=output_dir,
@@ -366,7 +372,7 @@ def main() -> None:
     cache = EmbeddingCache(cache_cfg)
 
     tasks = build_tasks(
-        models,
+        train_models,
         splits,
         dev_split,
         cache=cache,
@@ -413,6 +419,23 @@ def main() -> None:
     if args.save_meta_preds:
         save_json(output_dir / "fusionsql_meta_predictions.json", {"results": meta_results})
     save_json(output_dir / "fusionsql_dev_predictions.json", {"results": transfer_results})
+    if test_models:
+        print(f"[FusionSQL] Adapting to {len(test_models)} held-out model(s).")
+        test_tasks = build_tasks(
+            test_models,
+            splits,
+            dev_split,
+            cache=cache,
+            accuracy=accuracy_source,
+            meta_val_key=args.meta_val_key,
+            meta_test_key=args.meta_test_key,
+            dev_key=args.dev_key,
+            num_projections=args.num_projections,
+        )
+        test_meta = meta_learner.evaluate(test_tasks)
+        test_dev = meta_learner.evaluate_transfer(test_tasks)
+        save_json(output_dir / "fusionsql_test_meta_predictions.json", {"results": test_meta})
+        save_json(output_dir / "fusionsql_test_dev_predictions.json", {"results": test_dev})
 
 
 if __name__ == "__main__":

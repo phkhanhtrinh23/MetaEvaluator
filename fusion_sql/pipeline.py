@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
 
+import gc
 import numpy as np
 import torch
 
@@ -26,6 +27,11 @@ from .evaluation import build_prediction_records
 from .generation import GenerationSettings, SQLGenerator
 from .meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescriptorTask
 from .model import FusionSQL
+
+def clear_cuda_cache() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _parse_model_entry(raw: str) -> ModelSpec:
@@ -185,6 +191,7 @@ def build_tasks(
             feature_order=DEFAULT_FEATURE_ORDER,
         )
         tasks.append(task)
+        cache.clear_extractors()
     return tasks
 
 
@@ -383,6 +390,7 @@ def main() -> None:
         dev_key=args.dev_key,
         num_projections=args.num_projections,
     )
+    clear_cuda_cache()
 
     model = FusionSQL(input_dim=len(DEFAULT_FEATURE_ORDER))
     meta_cfg = MetaLearningConfig(

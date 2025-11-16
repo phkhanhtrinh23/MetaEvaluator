@@ -78,9 +78,6 @@ def parse_args() -> argparse.Namespace:
             "stabilityai/stablelm-2-1_6b-chat",
             "stabilityai/stablelm-2-zephyr-1_6b",
 
-            # InternLM2 (Shanghai AI Lab)
-            "internlm/internlm2-chat-1_8b",
-
             # # DeepSeek Coder family
             "deepseek-ai/deepseek-coder-1.3b-base",
             "deepseek-ai/deepseek-coder-6.7b-base",

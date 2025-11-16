@@ -70,6 +70,7 @@ class SQLGenerator:
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token or self.tokenizer.unk_token
+        self.tokenizer.padding_side = "left"
         model_kwargs = {}
         if model_spec.revision:
             model_kwargs["revision"] = model_spec.revision
@@ -84,6 +85,8 @@ class SQLGenerator:
         if lora_r and lora_r > 0:
             self.model = self._apply_lora(self.model, lora_r)
         self.model.to(self.device)
+        if hasattr(self.model.config, "use_cache"):
+            self.model.config.use_cache = False
         self.model.eval()
 
     def generate(self, prompts: Sequence[str]) -> List[str]:
@@ -100,6 +103,7 @@ class SQLGenerator:
                     repetition_penalty=self.settings.repetition_penalty,
                     eos_token_id=self.tokenizer.eos_token_id,
                     pad_token_id=self.tokenizer.pad_token_id,
+                    use_cache=False,
                 )
             gen_ids = generated[0, inputs["input_ids"].shape[1] :]
             text = self.tokenizer.decode(gen_ids, skip_special_tokens=True)

@@ -43,7 +43,7 @@ def _parse_model_entry(raw: str) -> ModelSpec:
     if entry.endswith(":remote"):
         entry = entry[: -len(":remote")]
         trust_remote = True
-    return ModelSpec(model_id=entry, alias=alias, trust_remote_code=trust_remote)
+    return ModelSpec(model_id=entry, alias=alias, trust_remote_code=True)
 
 
 def parse_model_specs(raw_list: Sequence[str] | None) -> List[ModelSpec]:
@@ -74,27 +74,29 @@ def parse_args() -> argparse.Namespace:
             "Qwen/Qwen2.5-Coder-1.5B-Instruct",
             "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
 
-            # # StableLM-2 (Stability AI)
-            # "stabilityai/stablelm-2-1_6b-chat",
-            # "stabilityai/stablelm-2-zephyr-1_6b",
+            # StableLM-2 (Stability AI)
+            "stabilityai/stablelm-2-1_6b-chat",
+            "stabilityai/stablelm-2-zephyr-1_6b",
 
-            # # OLMo (AI2)
-            # "allenai/OLMo-1B",
-            # "allenai/OLMo-1B-0724-hf",
-            # "allenai/OLMo-2-0425-1B-Instruct",
+            # InternLM2 (Shanghai AI Lab)
+            "internlm/internlm2-chat-1_8b",
 
-            # # InternLM2 (Shanghai AI Lab)
-            # "internlm/internlm2-chat-1_8b",
-
-            # # # DeepSeek Coder family
-            # "deepseek-ai/deepseek-coder-1.3b-base",
-            # "deepseek-ai/deepseek-coder-6.7b-base",
-            # "deepseek-ai/deepseek-coder-6.7b-instruct",
+            # # DeepSeek Coder family
+            "deepseek-ai/deepseek-coder-1.3b-base",
+            "deepseek-ai/deepseek-coder-6.7b-base",
+            "deepseek-ai/deepseek-coder-6.7b-instruct",
         ], help="Optional HF model ids (alias=model_id or alias=model_id:remote).")
     parser.add_argument("--test-model-ids", 
                         nargs="*",
                         default=["meta-llama/Llama-3.2-3B-Instruct",
-                                 "deepseek-ai/deepseek-coder-1.3b-base"], 
+                                 "Qwen/Qwen3-0.6B",
+                                 "Gensyn/Qwen2.5-0.5B-Instruct",
+                                 "Qwen/Qwen2.5-0.5B-Instruct",
+                                 "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+                                 "Qwen/Qwen3-0.6B-Base",
+                                 "deepseek-ai/deepseek-coder-1.3b-instruct",
+                                 "Qwen/Qwen2-0.5B",
+                                 "unsloth/Llama-3.2-1B-Instruct"], 
                         help="Extra model ids evaluated only after meta-training.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
@@ -113,7 +115,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inner-lr", type=float, default=0.01, help="Inner-loop lr.")
     parser.add_argument("--outer-lr", type=float, default=1e-3, help="Outer-loop lr.")
     parser.add_argument("--inner-steps", type=int, default=1, help="Inner updates per task.")
-    parser.add_argument("--epochs", type=int, default=500, help="Meta-training epochs.")
+    parser.add_argument("--epochs", type=int, default=200, help="Meta-training epochs.")
     parser.add_argument("--tasks-per-batch", type=int, default=4, help="Tasks per meta-batch.")
     parser.add_argument("--device", default=None, help="Torch device override.")
     parser.add_argument("--meta-val-key", default="meta_val", help="Accuracy key for meta validation split.")
@@ -325,7 +327,7 @@ def main() -> None:
     )
     train_prompts, train_samples = maybe_cap_examples(train_prompts, train_samples, args.max_train_samples)
     
-    train_prompts, train_samples = train_prompts[:500], train_samples[:500]
+    train_prompts, train_samples = train_prompts[:1000], train_samples[:1000]
 
     splits = build_prompt_splits(train_prompts, samples=train_samples, ratios=args.split_ratios, seed=args.split_seed)
 
@@ -391,6 +393,13 @@ def main() -> None:
         num_projections=args.num_projections,
     )
     clear_cuda_cache()
+    if len(tasks) > 1:
+        val_size = max(1, len(tasks) // 5)
+        val_tasks = tasks[:val_size]
+        train_tasks = tasks[val_size:]
+    else:
+        train_tasks = tasks
+        val_tasks = tasks
 
     model = FusionSQL(input_dim=len(DEFAULT_FEATURE_ORDER))
     meta_cfg = MetaLearningConfig(
@@ -404,11 +413,11 @@ def main() -> None:
     )
     meta_learner = FusionSQLMetaLearner(model, meta_cfg)
 
-    print(f"[FusionSQL] Training on {len(tasks)} tasks for {args.epochs} epochs.")
-    history = meta_learner.meta_train(tasks)
+    print(f"[FusionSQL] Training on {len(train_tasks)} tasks for {args.epochs} epochs.")
+    checkpoint_path = output_dir / "fusionsql_model.pt"
+    history = meta_learner.meta_train(train_tasks, val_tasks=val_tasks, checkpoint_path=checkpoint_path)
 
-    meta_results = meta_learner.evaluate(tasks)
-    meta_mae = float(np.mean([entry["mae"] for entry in meta_results]))
+    meta_results, meta_mae = meta_learner.evaluate(tasks, return_mae=True)
     print(f"[FusionSQL] Meta-test MAE: {meta_mae:.4f}")
 
     transfer_results = meta_learner.evaluate_transfer(tasks)

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Sequence
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -67,6 +69,8 @@ class MetaLearningConfig:
     device: str | None = None
     first_order: bool = True
     eval_inner_steps: int | None = None
+    val_interval: int = 10
+    early_stopping_patience: int = 20
 
 
 class FusionSQLMetaLearner:
@@ -104,11 +108,19 @@ class FusionSQLMetaLearner:
                 updated.append(param - self.cfg.inner_lr * grad)
         return updated
 
-    def meta_train(self, tasks: Sequence[ShiftDescriptorTask]) -> List[float]:
+    def meta_train(
+        self,
+        tasks: Sequence[ShiftDescriptorTask],
+        *,
+        val_tasks: Sequence[ShiftDescriptorTask] | None = None,
+        checkpoint_path: Path | None = None,
+    ) -> List[float]:
         if not tasks:
             raise ValueError("Meta-training requires at least one task.")
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.outer_lr)
         history: List[float] = []
+        best_val_mae = float("inf")
+        epochs_without_improve = 0
 
         for epoch in range(1, self.cfg.num_epochs + 1):
             batch = random.sample(tasks, k=min(self.cfg.tasks_per_batch, len(tasks)))
@@ -128,6 +140,21 @@ class FusionSQLMetaLearner:
             optimizer.step()
             history.append(meta_loss.item())
 
+            if val_tasks and epoch % max(1, self.cfg.val_interval) == 0:
+                val_results = self.evaluate(val_tasks)
+                val_mae = float(np.mean([entry["mae"] for entry in val_results]))
+                if val_mae + 1e-6 < best_val_mae:
+                    best_val_mae = val_mae
+                    epochs_without_improve = 0
+                    if checkpoint_path:
+                        torch.save(self.model.state_dict(), checkpoint_path)
+                else:
+                    epochs_without_improve += 1
+                    if self.cfg.early_stopping_patience > 0 and epochs_without_improve >= self.cfg.early_stopping_patience:
+                        break
+
+        if checkpoint_path and checkpoint_path.exists():
+            self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
         return history
 
     def _adapt_and_predict(
@@ -145,7 +172,7 @@ class FusionSQLMetaLearner:
         preds = self.model.functional_forward(target_descriptor, params)
         return preds.squeeze()
 
-    def evaluate(self, tasks: Iterable[ShiftDescriptorTask]) -> List[dict]:
+    def evaluate(self, tasks: Iterable[ShiftDescriptorTask], *, return_mae: bool = False) -> List[dict] | tuple[List[dict], float]:
         results: List[dict] = []
         for task in tasks:
             preds = self._adapt_and_predict(task.support_descriptor, task.support_label, task.query_descriptor)
@@ -158,6 +185,9 @@ class FusionSQLMetaLearner:
                     "mae": mae,
                 }
             )
+        if return_mae:
+            mean_mae = float(np.mean([entry["mae"] for entry in results])) if results else 0.0
+            return results, mean_mae
         return results
 
     def evaluate_transfer(self, tasks: Iterable[ShiftDescriptorTask]) -> List[dict]:

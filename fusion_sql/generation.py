@@ -8,7 +8,7 @@ from typing import List, Sequence
 
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from shift_descriptor.config import ModelSpec
 from shift_descriptor.embeddings import get_device
@@ -61,6 +61,7 @@ class SQLGenerator:
         self.settings = settings
         self.device = get_device(device)
         tokenizer_kwargs = {}
+        self.shutdown()
         if model_spec.revision:
             tokenizer_kwargs["revision"] = model_spec.revision
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -76,10 +77,18 @@ class SQLGenerator:
         if self.device.type == "cuda":
             model_kwargs["torch_dtype"] = torch.float16
             model_kwargs["low_cpu_mem_usage"] = True
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
             model_spec.model_id,
             trust_remote_code=model_spec.trust_remote_code,
             **model_kwargs,
+            quantization_config=bnb_config,
+            device_map="auto", # spread to GPU/CPU if needed
         )
         if lora_r and lora_r > 0:
             self.model = self._apply_lora(self.model, lora_r)

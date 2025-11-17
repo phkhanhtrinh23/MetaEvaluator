@@ -60,7 +60,7 @@ class EmbeddingCache:
         return self._extractors[key]
 
     def _embedding_path(self, model: ModelSpec, split_name: str) -> Path:
-        alias = model.alias or model.name
+        alias = model.alias or model.model_id
         sanitized = alias.replace("/", "-")
         return self.cfg.output_dir / f"{sanitized}_{split_name}_embeddings.npz"
 

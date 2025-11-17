@@ -111,8 +111,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-dev-samples", type=int, default=0, help="Optional cap on dev samples.")
     parser.add_argument("--inner-lr", type=float, default=0.01, help="Inner-loop lr.")
     parser.add_argument("--outer-lr", type=float, default=1e-3, help="Outer-loop lr.")
-    parser.add_argument("--inner-steps", type=int, default=1, help="Inner updates per task.")
-    parser.add_argument("--epochs", type=int, default=200, help="Meta-training epochs.")
+    parser.add_argument("--inner-steps", type=int, default=5, help="Inner updates per task.")
+    parser.add_argument("--epochs", type=int, default=500, help="Meta-training epochs.")
     parser.add_argument("--tasks-per-batch", type=int, default=4, help="Tasks per meta-batch.")
     parser.add_argument("--device", default=None, help="Torch device override.")
     parser.add_argument("--meta-val-key", default="meta_val", help="Accuracy key for meta validation split.")
@@ -143,7 +143,7 @@ def build_tasks(
 ) -> List[ShiftDescriptorTask]:
     tasks: List[ShiftDescriptorTask] = []
     for model in models:
-        model_name = model.alias or model.name
+        model_name = model.alias or model.model_id
         emb_meta_train = cache.load_or_compute(model, "meta_train", splits["meta_train"].prompts)
         emb_meta_val = cache.load_or_compute(model, "meta_val", splits["meta_val"].prompts)
         emb_meta_test = cache.load_or_compute(model, "meta_test", splits["meta_test"].prompts)
@@ -201,7 +201,7 @@ def save_json(path: Path, payload: Dict) -> None:
 
 
 def sanitize_model_name(spec: ModelSpec) -> str:
-    alias = spec.alias or spec.name
+    alias = spec.alias or spec.model_id
     return alias.replace("/", "-")
 
 
@@ -273,7 +273,7 @@ def run_inference_for_models(
     predictions_root.mkdir(parents=True, exist_ok=True)
     accuracy_summary: Dict[str, Dict[str, float]] = {}
     for model in models:
-        model_name = model.alias or model.name
+        model_name = model.alias or model.model_id
         print(f"[FusionSQL] Generating SQL for {model_name}...")
         model_dir = predictions_root / sanitize_model_name(model)
         model_dir.mkdir(exist_ok=True)
@@ -449,6 +449,8 @@ def main() -> None:
         )
         test_meta = meta_learner.evaluate(test_tasks)
         test_dev = meta_learner.evaluate_transfer(test_tasks)
+        print(f"[FusionSQL] Held-out Meta-test MAE: {float(np.mean([entry['mae'] for entry in test_meta])):.4f}")
+        print(f"[FusionSQL] Held-out Real-test MAE: {float(np.mean([entry['mae'] for entry in test_dev])):.4f}")
         save_json(output_dir / "fusionsql_test_meta_predictions.json", {"results": test_meta})
         save_json(output_dir / "fusionsql_test_dev_predictions.json", {"results": test_dev})
 

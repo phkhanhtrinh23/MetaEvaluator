@@ -10,6 +10,7 @@ from typing import Iterable, List, Sequence
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm.auto import tqdm, trange
 
 from .descriptors import DEFAULT_FEATURE_ORDER, ShiftDescriptor
 from .model import FusionSQL
@@ -71,6 +72,8 @@ class MetaLearningConfig:
     eval_inner_steps: int | None = None
     val_interval: int = 10
     early_stopping_patience: int = 20
+    meta_reg_lambda: float = 0.0  # L2 regularization on meta-parameters
+    meta_reg_beta: float = 0.0  # KL-style regularizer on adapted activations
 
 
 class FusionSQLMetaLearner:
@@ -90,6 +93,10 @@ class FusionSQLMetaLearner:
         if detach:
             return FusionSQL.clone_parameters(params)
         return list(params)
+
+    def _kl_reg(self, tensor: torch.Tensor) -> torch.Tensor:
+        # Approximate KL(q(z|x)||N(0,I)) assuming unit variance for q: 0.5 * ||mu||^2
+        return 0.5 * torch.mean(tensor ** 2)
 
     def _inner_step(self, params: List[torch.Tensor], descriptor: torch.Tensor, label: torch.Tensor) -> List[torch.Tensor]:
         preds = self.model.functional_forward(descriptor, params)
@@ -122,7 +129,7 @@ class FusionSQLMetaLearner:
         best_val_mae = float("inf")
         epochs_without_improve = 0
 
-        for epoch in range(1, self.cfg.num_epochs + 1):
+        for epoch in trange(1, self.cfg.num_epochs + 1, desc="Meta-train", leave=False):
             batch = random.sample(tasks, k=min(self.cfg.tasks_per_batch, len(tasks)))
             meta_loss = 0.0
             optimizer.zero_grad()
@@ -133,9 +140,16 @@ class FusionSQLMetaLearner:
                     params = self._inner_step(params, task.support_descriptor, task.support_label)
                 preds = self.model.functional_forward(task.query_descriptor, params)
                 loss = F.mse_loss(preds, task.query_label)
+                if self.cfg.meta_reg_beta > 0.0:
+                    loss = loss + self.cfg.meta_reg_beta * self._kl_reg(preds)
                 meta_loss = meta_loss + loss
 
             meta_loss = meta_loss / len(batch)
+            if self.cfg.meta_reg_lambda > 0.0:
+                reg = 0.0
+                for p in self.model.parameters():
+                    reg = reg + torch.sum(p ** 2)
+                meta_loss = meta_loss + self.cfg.meta_reg_lambda * reg
             meta_loss.backward()
             optimizer.step()
             history.append(meta_loss.item())
@@ -174,7 +188,7 @@ class FusionSQLMetaLearner:
 
     def evaluate(self, tasks: Iterable[ShiftDescriptorTask], *, return_mae: bool = False) -> List[dict] | tuple[List[dict], float]:
         results: List[dict] = []
-        for task in tasks:
+        for task in tqdm(list(tasks), desc="Meta-eval", leave=False):
             preds = self._adapt_and_predict(task.support_descriptor, task.support_label, task.query_descriptor)
             mae = torch.abs(preds - task.query_label.squeeze()).item()
             results.append(
@@ -194,7 +208,7 @@ class FusionSQLMetaLearner:
         """Evaluate on held-out descriptors (e.g., real dev set)."""
 
         results: List[dict] = []
-        for task in tasks:
+        for task in tqdm(list(tasks), desc="Transfer-eval", leave=False):
             if task.transfer_descriptor is None or task.transfer_label is None:
                 continue
             preds = self._adapt_and_predict(

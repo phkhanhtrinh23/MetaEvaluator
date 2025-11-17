@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 def _guess_lora_targets(model: torch.nn.Module) -> List[str]:
@@ -91,11 +91,20 @@ class EmbeddingExtractor:
             model_kwargs.setdefault("revision", config.revision)
         uses_device_map = "device_map" in model_kwargs and model_kwargs["device_map"] not in (None, "cpu")
 
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
             config.model_id,
             trust_remote_code=config.trust_remote_code,
             **model_kwargs,
+            quantization_config=bnb_config,
+            device_map="auto", # spread to GPU/CPU if needed
         )
+        
         if not uses_device_map:
             self.model.to(self.device)
         self.model_device = getattr(self.model, "device", self.device)

@@ -10,8 +10,8 @@ from typing import Dict, List, Mapping, Sequence
 import gc
 import numpy as np
 import torch
-
 from shift_descriptor.config import ModelSpec, default_model_specs
+from tqdm.auto import tqdm
 
 from .accuracy import ModelAccuracySource
 from .data_utils import (
@@ -142,7 +142,7 @@ def build_tasks(
     num_projections: int,
 ) -> List[ShiftDescriptorTask]:
     tasks: List[ShiftDescriptorTask] = []
-    for model in models:
+    for model in tqdm(models, desc="Build tasks", leave=False):
         model_name = model.alias or model.model_id
         emb_meta_train = cache.load_or_compute(model, "meta_train", splits["meta_train"].prompts)
         emb_meta_val = cache.load_or_compute(model, "meta_val", splits["meta_val"].prompts)

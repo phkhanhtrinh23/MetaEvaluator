@@ -27,11 +27,33 @@ from .evaluation import build_prediction_records
 from .generation import GenerationSettings, SQLGenerator
 from .meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescriptorTask
 from .model import FusionSQL
+from .optimal_transport import map_to_nearest_descriptor
 
 def clear_cuda_cache() -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _compute_descriptor_stats(tasks: Sequence[ShiftDescriptorTask]) -> tuple[torch.Tensor, torch.Tensor]:
+    tensors = []
+    for task in tasks:
+        tensors.append(task.support_descriptor)
+        tensors.append(task.query_descriptor)
+        if task.transfer_descriptor is not None:
+            tensors.append(task.transfer_descriptor)
+    all_desc = torch.cat(tensors, dim=0)
+    mean = all_desc.mean(dim=0, keepdim=True)
+    std = all_desc.std(dim=0, keepdim=True).clamp(min=1e-6)
+    return mean, std
+
+
+def _apply_descriptor_norm(tasks: Sequence[ShiftDescriptorTask], mean: torch.Tensor, std: torch.Tensor) -> None:
+    for task in tasks:
+        task.support_descriptor.sub_(mean).div_(std)
+        task.query_descriptor.sub_(mean).div_(std)
+        if task.transfer_descriptor is not None:
+            task.transfer_descriptor.sub_(mean).div_(std)
 
 
 def _parse_model_entry(raw: str) -> ModelSpec:
@@ -95,6 +117,9 @@ def parse_args() -> argparse.Namespace:
                                  "Qwen/Qwen2-0.5B",
                                  "unsloth/Llama-3.2-1B-Instruct"], 
                         help="Extra model ids evaluated only after meta-training.")
+    parser.add_argument("--use-ot-eval", default=True, help="Use optimal transport mapping for test models instead of meta inference.")
+    parser.add_argument("--ot-strategy", choices=["emd", "sinkhorn"], default="sinkhorn", help="OT distance for mapping descriptors when --use-ot-eval is set.")
+    parser.add_argument("--ot-epsilon", type=float, default=0.1, help="Sinkhorn epsilon for OT mapping.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
     parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank (<=0 disables).")
@@ -337,7 +362,7 @@ def main() -> None:
         text_field=args.text_field,
     )
     dev_prompts, dev_samples = maybe_cap_examples(dev_prompts, dev_samples, args.max_dev_samples)
-    dev_prompts, dev_samples = dev_prompts[:100], dev_samples[:100]
+    dev_prompts, dev_samples = dev_prompts[:200], dev_samples[:200]
     
     dev_split = create_dev_split(dev_prompts, dev_samples)
 
@@ -389,6 +414,8 @@ def main() -> None:
         dev_key=args.dev_key,
         num_projections=args.num_projections,
     )
+    norm_mean, norm_std = _compute_descriptor_stats(tasks)
+    _apply_descriptor_norm(tasks, norm_mean, norm_std)
     clear_cuda_cache()
     if len(tasks) > 1:
         val_size = max(1, len(tasks) // 5)
@@ -447,12 +474,67 @@ def main() -> None:
             dev_key=args.dev_key,
             num_projections=args.num_projections,
         )
-        test_meta = meta_learner.evaluate(test_tasks)
-        test_dev = meta_learner.evaluate_transfer(test_tasks)
-        print(f"[FusionSQL] Held-out Meta-test MAE: {float(np.mean([entry['mae'] for entry in test_meta])):.4f}")
-        print(f"[FusionSQL] Held-out Real-test MAE: {float(np.mean([entry['mae'] for entry in test_dev])):.4f}")
-        save_json(output_dir / "fusionsql_test_meta_predictions.json", {"results": test_meta})
-        save_json(output_dir / "fusionsql_test_dev_predictions.json", {"results": test_dev})
+        _apply_descriptor_norm(test_tasks, norm_mean, norm_std)
+        if args.use_ot_eval:
+            print("[FusionSQL] Using OT mapping for held-out models.")
+            support_refs = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in tasks])
+            support_labels = np.array([task.support_label.squeeze().item() for task in tasks])
+            dev_refs = np.stack([task.transfer_descriptor.squeeze(0).cpu().numpy() for task in tasks if task.transfer_descriptor is not None])
+            dev_labels = np.array([task.transfer_label.squeeze().item() for task in tasks if task.transfer_label is not None])
+
+            ot_meta = []
+            for task in test_tasks:
+                target = task.support_descriptor.squeeze(0).cpu().numpy()
+                pred_acc, ref_idx, dist = map_to_nearest_descriptor(
+                    target,
+                    support_refs,
+                    support_labels,
+                    strategy=args.ot_strategy,
+                    epsilon=args.ot_epsilon,
+                )
+                ot_meta.append(
+                    {
+                        "model": task.model_name,
+                        "predicted_accuracy": pred_acc,
+                        "true_accuracy": float(task.support_label.squeeze().item()),
+                        "ref_index": int(ref_idx),
+                        "distance": dist,
+                    }
+                )
+            ot_meta_mae = float(np.mean([abs(r["predicted_accuracy"] - r["true_accuracy"]) for r in ot_meta]))
+
+            ot_dev = []
+            for task in test_tasks:
+                if task.transfer_descriptor is None or task.transfer_label is None or len(dev_refs) == 0:
+                    continue
+                target = task.transfer_descriptor.squeeze(0).cpu().numpy()
+                pred_acc, ref_idx, dist = map_to_nearest_descriptor(
+                    target,
+                    dev_refs,
+                    dev_labels,
+                    strategy=args.ot_strategy,
+                    epsilon=args.ot_epsilon,
+                )
+                ot_dev.append(
+                    {
+                        "model": task.model_name,
+                        "predicted_accuracy": pred_acc,
+                        "true_accuracy": float(task.transfer_label.squeeze().item()),
+                        "ref_index": int(ref_idx),
+                        "distance": dist,
+                    }
+                )
+            ot_dev_mae = float(np.mean([abs(r["predicted_accuracy"] - r["true_accuracy"]) for r in ot_dev])) if ot_dev else None
+
+            save_json(output_dir / "fusionsql_test_meta_predictions_ot.json", {"results": ot_meta, "mae": ot_meta_mae})
+            save_json(output_dir / "fusionsql_test_dev_predictions_ot.json", {"results": ot_dev, "mae": ot_dev_mae})
+        else:
+            test_meta = meta_learner.evaluate(test_tasks)
+            test_dev = meta_learner.evaluate_transfer(test_tasks)
+            print(f"[FusionSQL] Held-out Meta-test MAE: {float(np.mean([entry['mae'] for entry in test_meta])):.4f}")
+            print(f"[FusionSQL] Held-out Real-test MAE: {float(np.mean([entry['mae'] for entry in test_dev])):.4f}")
+            save_json(output_dir / "fusionsql_test_meta_predictions.json", {"results": test_meta})
+            save_json(output_dir / "fusionsql_test_dev_predictions.json", {"results": test_dev})
 
 
 if __name__ == "__main__":

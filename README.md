@@ -66,3 +66,27 @@ Some architectures rely on custom kernels. Install the corresponding extras befo
 - **LoRA** (all models when enabled): `pip install peft`
 
 The `EmbeddingExtractor` now falls back to recurrent `state` tensors when `last_hidden_state` is unavailable, so these models integrate seamlessly once their deps are available.
+
+## FusionSQL Meta-Learner
+
+We also ship a meta-learner (`fusion_sql/`) that predicts execution accuracy for new Text-to-SQL models using shift descriptors.
+
+### Usage
+
+```bash
+python -m fusion_sql.pipeline \
+  --train-path data/sft_spider_train_text2sql.json \
+  --dev-path data/sft_spider_dev_text2sql.json \
+  --output-dir outputs/fusionsql \
+  --embedding-dir outputs/fusionsql/embeddings \
+  --model-ids ... \
+  [--test-model-ids ...] \
+  [--use-ot-eval --ot-strategy emd|sinkhorn --ot-epsilon 0.1]
+```
+
+Key notes:
+- Splits the training JSON into `meta_train`/`meta_val`/`meta_test` (default 60/20/20), renders prompts, and caches embeddings per model/split (FP16 on CUDA, optional LoRA).
+- Generates SQL for each split and computes exact/execution accuracy against SQLite DBs under `data/database/<db_id>/<db_id>.sqlite` (or `db_path` fallback). Prediction/accuracy JSON is cached and reused if sample counts match.
+- Builds shift descriptors (Fréchet/Mahalanobis/SWD) between meta_train and other splits, normalizes them, and meta-trains a three-layer MLP (FusionSQL) with early stopping and optional meta regularizers (`meta_reg_lambda`, `meta_reg_beta`).
+- Held-out models (`--test-model-ids`) can be evaluated either via the meta-learner or via optimal transport mapping (`--use-ot-eval`) using EMD or Sinkhorn to nearest learned descriptors.
+- Outputs live under `outputs/fusionsql/` (metrics, predictions, checkpoints). A helper `scripts/inspect_fusionsql.py` prints the saved checkpoint structure, and `scripts/rename_model_outputs.py` migrates old tail-based filenames to full model ids.

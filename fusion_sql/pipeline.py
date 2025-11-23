@@ -27,7 +27,7 @@ from .evaluation import build_prediction_records
 from .generation import GenerationSettings, SQLGenerator
 from .meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescriptorTask
 from .model import FusionSQL
-from .optimal_transport import map_to_nearest_descriptor
+from .optimal_transport import map_to_nearest_descriptor, sinkhorn_plan
 
 def clear_cuda_cache() -> None:
     gc.collect()
@@ -117,9 +117,11 @@ def parse_args() -> argparse.Namespace:
                                  "Qwen/Qwen2-0.5B",
                                  "unsloth/Llama-3.2-1B-Instruct"], 
                         help="Extra model ids evaluated only after meta-training.")
-    parser.add_argument("--use-ot-eval", default=True, help="Use optimal transport mapping for test models instead of meta inference.")
-    parser.add_argument("--ot-strategy", choices=["emd", "sinkhorn"], default="sinkhorn", help="OT distance for mapping descriptors when --use-ot-eval is set.")
+    parser.add_argument("--ot-strategy", choices=["emd", "sinkhorn", "laplace"], default="emd", help="OT distance for mapping descriptors when --use-ot-eval is set.")
     parser.add_argument("--ot-epsilon", type=float, default=0.1, help="Sinkhorn epsilon for OT mapping.")
+    parser.add_argument("--ot-use-plan", type=bool, default=True, help="Use full Sinkhorn transport plan and barycentric label averaging.")
+    parser.add_argument("--ot-laplace-alpha", type=float, default=0.1, help="Laplacian regularization strength for OT laplace strategy.")
+    parser.add_argument("--ot-knn", type=int, default=5, help="k for Laplacian knn graph in OT laplace strategy.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
     parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank (<=0 disables).")
@@ -151,6 +153,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-meta-preds", action="store_true", help="Whether to persist meta-test predictions (default True).")
     parser.add_argument("--no-save-meta-preds", dest="save_meta_preds", action="store_false", help=argparse.SUPPRESS)
     parser.set_defaults(save_meta_preds=True)
+    parser.add_argument("--meta-reg-lambda", type=float, default=1e-4, help="L2 regularization on meta-parameters.")
+    parser.add_argument("--meta-reg-beta", type=float, default=1e-3, help="KL-style meta regularizer on outer loss.")
     return parser.parse_args()
 
 
@@ -434,6 +438,8 @@ def main() -> None:
         num_epochs=args.epochs,
         device=args.device,
         eval_inner_steps=args.eval_inner_steps,
+        meta_reg_lambda=args.meta_reg_lambda,
+        meta_reg_beta=args.meta_reg_beta,
     )
     meta_learner = FusionSQLMetaLearner(model, meta_cfg)
 
@@ -475,7 +481,7 @@ def main() -> None:
             num_projections=args.num_projections,
         )
         _apply_descriptor_norm(test_tasks, norm_mean, norm_std)
-        if args.use_ot_eval:
+        if args.ot_use_plan:
             print("[FusionSQL] Using OT mapping for held-out models.")
             support_refs = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in tasks])
             support_labels = np.array([task.support_label.squeeze().item() for task in tasks])
@@ -491,6 +497,8 @@ def main() -> None:
                     support_labels,
                     strategy=args.ot_strategy,
                     epsilon=args.ot_epsilon,
+                    laplace_alpha=args.ot_laplace_alpha,
+                    knn=args.ot_knn,
                 )
                 ot_meta.append(
                     {
@@ -514,6 +522,8 @@ def main() -> None:
                     dev_labels,
                     strategy=args.ot_strategy,
                     epsilon=args.ot_epsilon,
+                    laplace_alpha=args.ot_laplace_alpha,
+                    knn=args.ot_knn,
                 )
                 ot_dev.append(
                     {

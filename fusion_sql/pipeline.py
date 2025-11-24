@@ -27,7 +27,7 @@ from .evaluation import build_prediction_records
 from .generation import GenerationSettings, SQLGenerator
 from .meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescriptorTask
 from .model import FusionSQL
-from .optimal_transport import map_to_nearest_descriptor, sinkhorn_plan
+from .optimal_transport import barycentric_mapping, sinkhorn_plan
 
 def clear_cuda_cache() -> None:
     gc.collect()
@@ -90,34 +90,35 @@ def parse_args() -> argparse.Namespace:
             "TinyLlama/TinyLlama_v1.1",
             "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
 
-            # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
-            "Qwen/Qwen2.5-Coder-3B-Instruct",
-            "Qwen/Qwen2.5-Coder-1.5B",
-            "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-            "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+            # # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
+            # "Qwen/Qwen2.5-Coder-3B-Instruct",
+            # "Qwen/Qwen2.5-Coder-1.5B",
+            # "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+            # "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
 
-            # StableLM-2 (Stability AI)
-            "stabilityai/stablelm-2-1_6b-chat",
-            "stabilityai/stablelm-2-zephyr-1_6b",
+            # # StableLM-2 (Stability AI)
+            # "stabilityai/stablelm-2-1_6b-chat",
+            # "stabilityai/stablelm-2-zephyr-1_6b",
 
-            # # DeepSeek Coder family
-            "deepseek-ai/deepseek-coder-1.3b-base",
-            "deepseek-ai/deepseek-coder-6.7b-base",
-            "deepseek-ai/deepseek-coder-6.7b-instruct",
+            # # # DeepSeek Coder family
+            # "deepseek-ai/deepseek-coder-1.3b-base",
+            # "deepseek-ai/deepseek-coder-6.7b-base",
+            # "deepseek-ai/deepseek-coder-6.7b-instruct",
         ], help="Optional HF model ids (alias=model_id or alias=model_id:remote).")
     parser.add_argument("--test-model-ids", 
                         nargs="*",
                         default=["meta-llama/Llama-3.2-3B-Instruct",
                                  "Qwen/Qwen3-0.6B",
-                                 "Gensyn/Qwen2.5-0.5B-Instruct",
-                                 "Qwen/Qwen2.5-0.5B-Instruct",
-                                 "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-                                 "Qwen/Qwen3-0.6B-Base",
-                                 "deepseek-ai/deepseek-coder-1.3b-instruct",
-                                 "Qwen/Qwen2-0.5B",
-                                 "unsloth/Llama-3.2-1B-Instruct"], 
+                                #  "Gensyn/Qwen2.5-0.5B-Instruct",
+                                #  "Qwen/Qwen2.5-0.5B-Instruct",
+                                #  "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+                                #  "Qwen/Qwen3-0.6B-Base",
+                                #  "deepseek-ai/deepseek-coder-1.3b-instruct",
+                                #  "Qwen/Qwen2-0.5B",
+                                #  "unsloth/Llama-3.2-1B-Instruct"
+                                ], 
                         help="Extra model ids evaluated only after meta-training.")
-    parser.add_argument("--ot-strategy", choices=["emd", "sinkhorn", "laplace"], default="emd", help="OT distance for mapping descriptors when --use-ot-eval is set.")
+    parser.add_argument("--ot-strategy", choices=["emd", "sinkhorn", "laplace"], default="laplace", help="OT distance for mapping descriptors when --use-ot-eval is set.")
     parser.add_argument("--ot-epsilon", type=float, default=0.1, help="Sinkhorn epsilon for OT mapping.")
     parser.add_argument("--ot-use-plan", type=bool, default=True, help="Use full Sinkhorn transport plan and barycentric label averaging.")
     parser.add_argument("--ot-laplace-alpha", type=float, default=0.1, help="Laplacian regularization strength for OT laplace strategy.")
@@ -488,53 +489,58 @@ def main() -> None:
             dev_refs = np.stack([task.transfer_descriptor.squeeze(0).cpu().numpy() for task in tasks if task.transfer_descriptor is not None])
             dev_labels = np.array([task.transfer_label.squeeze().item() for task in tasks if task.transfer_label is not None])
 
+            # Compute a single Sinkhorn transport plan from reference descriptors to the held-out descriptors
+            support_targets = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in test_tasks])
+            gamma_meta = sinkhorn_plan(support_refs, support_targets, reg=args.ot_epsilon, num_iter=200)
+            meta_pred = barycentric_mapping(gamma_meta.T, support_labels[:, None]).squeeze(-1)
+            meta_top = np.argmax(gamma_meta, axis=0)
+            true_meta = np.array([float(task.support_label.squeeze().item()) for task in test_tasks])
+
             ot_meta = []
-            for task in test_tasks:
-                target = task.support_descriptor.squeeze(0).cpu().numpy()
-                pred_acc, ref_idx, dist = map_to_nearest_descriptor(
-                    target,
-                    support_refs,
-                    support_labels,
-                    strategy=args.ot_strategy,
-                    epsilon=args.ot_epsilon,
-                    laplace_alpha=args.ot_laplace_alpha,
-                    knn=args.ot_knn,
-                )
+            for idx, task in enumerate(test_tasks):
                 ot_meta.append(
                     {
                         "model": task.model_name,
-                        "predicted_accuracy": pred_acc,
-                        "true_accuracy": float(task.support_label.squeeze().item()),
-                        "ref_index": int(ref_idx),
-                        "distance": dist,
+                        "predicted_accuracy": float(meta_pred[idx]),
+                        "true_accuracy": true_meta[idx],
+                        "ref_index": int(meta_top[idx]),
+                        "distance": None,
                     }
                 )
-            ot_meta_mae = float(np.mean([abs(r["predicted_accuracy"] - r["true_accuracy"]) for r in ot_meta]))
+            ot_meta_mae = float(np.mean(np.abs(meta_pred - true_meta)))
 
             ot_dev = []
-            for task in test_tasks:
-                if task.transfer_descriptor is None or task.transfer_label is None or len(dev_refs) == 0:
-                    continue
-                target = task.transfer_descriptor.squeeze(0).cpu().numpy()
-                pred_acc, ref_idx, dist = map_to_nearest_descriptor(
-                    target,
-                    dev_refs,
-                    dev_labels,
-                    strategy=args.ot_strategy,
-                    epsilon=args.ot_epsilon,
-                    laplace_alpha=args.ot_laplace_alpha,
-                    knn=args.ot_knn,
+            dev_targets = [
+                (
+                    idx,
+                    task.model_name,
+                    task.transfer_descriptor.squeeze(0).cpu().numpy(),
+                    float(task.transfer_label.squeeze().item()),
                 )
-                ot_dev.append(
-                    {
-                        "model": task.model_name,
-                        "predicted_accuracy": pred_acc,
-                        "true_accuracy": float(task.transfer_label.squeeze().item()),
-                        "ref_index": int(ref_idx),
-                        "distance": dist,
-                    }
-                )
-            ot_dev_mae = float(np.mean([abs(r["predicted_accuracy"] - r["true_accuracy"]) for r in ot_dev])) if ot_dev else None
+                for idx, task in enumerate(test_tasks)
+                if task.transfer_descriptor is not None and task.transfer_label is not None and len(dev_refs) > 0
+            ]
+            if dev_targets:
+                dev_target_stack = np.stack([entry[2] for entry in dev_targets])
+                gamma_dev = sinkhorn_plan(dev_refs, dev_target_stack, reg=args.ot_epsilon, num_iter=200)
+                dev_pred = barycentric_mapping(gamma_dev.T, dev_labels[:, None]).squeeze(-1)
+                dev_top = np.argmax(gamma_dev, axis=0)
+                true_dev = np.array([entry[3] for entry in dev_targets])
+
+                for j, entry in enumerate(dev_targets):
+                    _, model_name, _, true_label = entry
+                    ot_dev.append(
+                        {
+                            "model": model_name,
+                            "predicted_accuracy": float(dev_pred[j]),
+                            "true_accuracy": true_label,
+                            "ref_index": int(dev_top[j]),
+                            "distance": None,
+                        }
+                    )
+                ot_dev_mae = float(np.mean(np.abs(dev_pred - true_dev)))
+            else:
+                ot_dev_mae = None
 
             save_json(output_dir / "fusionsql_test_meta_predictions_ot.json", {"results": ot_meta, "mae": ot_meta_mae})
             save_json(output_dir / "fusionsql_test_dev_predictions_ot.json", {"results": ot_dev, "mae": ot_dev_mae})

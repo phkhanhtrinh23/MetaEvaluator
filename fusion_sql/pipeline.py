@@ -59,12 +59,10 @@ def _apply_descriptor_norm(tasks: Sequence[ShiftDescriptorTask], mean: torch.Ten
 def _parse_model_entry(raw: str) -> ModelSpec:
     alias = None
     entry = raw
-    trust_remote = False
     if "=" in raw:
         alias, entry = raw.split("=", 1)
     if entry.endswith(":remote"):
         entry = entry[: -len(":remote")]
-        trust_remote = True
     return ModelSpec(model_id=entry, alias=alias, trust_remote_code=True)
 
 
@@ -118,11 +116,8 @@ def parse_args() -> argparse.Namespace:
                                 #  "unsloth/Llama-3.2-1B-Instruct"
                                 ], 
                         help="Extra model ids evaluated only after meta-training.")
-    parser.add_argument("--ot-strategy", choices=["emd", "sinkhorn", "laplace"], default="laplace", help="OT distance for mapping descriptors when --use-ot-eval is set.")
     parser.add_argument("--ot-epsilon", type=float, default=0.1, help="Sinkhorn epsilon for OT mapping.")
     parser.add_argument("--ot-use-plan", type=bool, default=True, help="Use full Sinkhorn transport plan and barycentric label averaging.")
-    parser.add_argument("--ot-laplace-alpha", type=float, default=0.1, help="Laplacian regularization strength for OT laplace strategy.")
-    parser.add_argument("--ot-knn", type=int, default=5, help="k for Laplacian knn graph in OT laplace strategy.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
     parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank (<=0 disables).")

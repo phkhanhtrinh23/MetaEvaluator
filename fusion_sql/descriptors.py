@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Sequence
 
 import numpy as np
 import torch
@@ -83,14 +83,3 @@ def compute_shift_descriptor(
             raise KeyError(f"Feature '{feature_name}' missing from computed descriptor.")
 
     return ShiftDescriptor(model_name=model_name, split_a=split_a, split_b=split_b, features=features)
-
-
-def stack_descriptors(
-    descriptors: Iterable[ShiftDescriptor],
-    feature_order: Sequence[str] = DEFAULT_FEATURE_ORDER,
-    device: torch.device | None = None,
-) -> torch.Tensor:
-    rows: List[torch.Tensor] = []
-    for descriptor in descriptors:
-        rows.append(descriptor.as_tensor(feature_order=feature_order, device=device))
-    return torch.stack(rows, dim=0)

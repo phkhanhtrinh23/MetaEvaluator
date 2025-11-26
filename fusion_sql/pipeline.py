@@ -88,32 +88,32 @@ def parse_args() -> argparse.Namespace:
             "TinyLlama/TinyLlama_v1.1",
             "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
 
-            # # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
-            # "Qwen/Qwen2.5-Coder-3B-Instruct",
-            # "Qwen/Qwen2.5-Coder-1.5B",
-            # "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-            # "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
+            # QwenCoder (XiYanSQL is a finetune of Qwen/Qwen2.x Coder)
+            "Qwen/Qwen2.5-Coder-3B-Instruct",
+            "Qwen/Qwen2.5-Coder-1.5B",
+            "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+            "XGenerationLab/XiYanSQL-QwenCoder-3B-2502",
 
-            # # StableLM-2 (Stability AI)
-            # "stabilityai/stablelm-2-1_6b-chat",
-            # "stabilityai/stablelm-2-zephyr-1_6b",
+            # StableLM-2 (Stability AI)
+            "stabilityai/stablelm-2-1_6b-chat",
+            "stabilityai/stablelm-2-zephyr-1_6b",
 
-            # # # DeepSeek Coder family
-            # "deepseek-ai/deepseek-coder-1.3b-base",
-            # "deepseek-ai/deepseek-coder-6.7b-base",
-            # "deepseek-ai/deepseek-coder-6.7b-instruct",
+            # # DeepSeek Coder family
+            "deepseek-ai/deepseek-coder-1.3b-base",
+            "deepseek-ai/deepseek-coder-6.7b-base",
+            "deepseek-ai/deepseek-coder-6.7b-instruct",
         ], help="Optional HF model ids (alias=model_id or alias=model_id:remote).")
     parser.add_argument("--test-model-ids", 
                         nargs="*",
                         default=["meta-llama/Llama-3.2-3B-Instruct",
                                  "Qwen/Qwen3-0.6B",
-                                #  "Gensyn/Qwen2.5-0.5B-Instruct",
-                                #  "Qwen/Qwen2.5-0.5B-Instruct",
-                                #  "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-                                #  "Qwen/Qwen3-0.6B-Base",
-                                #  "deepseek-ai/deepseek-coder-1.3b-instruct",
-                                #  "Qwen/Qwen2-0.5B",
-                                #  "unsloth/Llama-3.2-1B-Instruct"
+                                 "Gensyn/Qwen2.5-0.5B-Instruct",
+                                 "Qwen/Qwen2.5-0.5B-Instruct",
+                                 "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+                                 "Qwen/Qwen3-0.6B-Base",
+                                 "deepseek-ai/deepseek-coder-1.3b-instruct",
+                                 "Qwen/Qwen2-0.5B",
+                                 "unsloth/Llama-3.2-1B-Instruct"
                                 ], 
                         help="Extra model ids evaluated only after meta-training.")
     parser.add_argument("--ot-epsilon", type=float, default=0.1, help="Sinkhorn epsilon for OT mapping.")
@@ -481,13 +481,22 @@ def main() -> None:
             print("[FusionSQL] Using OT mapping for held-out models.")
             support_refs = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in tasks])
             support_labels = np.array([task.support_label.squeeze().item() for task in tasks])
+            support_model_names = [task.model_name for task in tasks]
             dev_refs = np.stack([task.transfer_descriptor.squeeze(0).cpu().numpy() for task in tasks if task.transfer_descriptor is not None])
             dev_labels = np.array([task.transfer_label.squeeze().item() for task in tasks if task.transfer_label is not None])
+            dev_ref_models = [task.model_name for task in tasks if task.transfer_descriptor is not None]
 
             # Compute a single Sinkhorn transport plan from reference descriptors to the held-out descriptors
             support_targets = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in test_tasks])
             gamma_meta = sinkhorn_plan(support_refs, support_targets, reg=args.ot_epsilon, num_iter=200)
+            
+            """
+            support_labels is a 1‑D array of length n_s (one label per source descriptor). barycentric_mapping expects Xt to be a 2‑D array with shape (n_s, d), so the matrix multiply gamma @ Xt works and stays 2‑D. 
+            By reshaping to support_labels[:, None] we make it (n_s, 1), which lets gamma_meta.T (shape (n_t, n_s)) produce an (n_t, 1) column of predicted labels and keeps the subsequent division by row_sums well‑shaped. 
+            Passing the 1‑D array directly would either error or broadcast incorrectly when divided by row_sums.
+            """
             meta_pred = barycentric_mapping(gamma_meta.T, support_labels[:, None]).squeeze(-1)
+            
             meta_top = np.argmax(gamma_meta, axis=0)
             true_meta = np.array([float(task.support_label.squeeze().item()) for task in test_tasks])
 
@@ -499,6 +508,7 @@ def main() -> None:
                         "predicted_accuracy": float(meta_pred[idx]),
                         "true_accuracy": true_meta[idx],
                         "ref_index": int(meta_top[idx]),
+                        "ref_model": support_model_names[int(meta_top[idx])],
                         "distance": None,
                     }
                 )
@@ -530,6 +540,7 @@ def main() -> None:
                             "predicted_accuracy": float(dev_pred[j]),
                             "true_accuracy": true_label,
                             "ref_index": int(dev_top[j]),
+                            "ref_model": dev_ref_models[int(dev_top[j])],
                             "distance": None,
                         }
                     )

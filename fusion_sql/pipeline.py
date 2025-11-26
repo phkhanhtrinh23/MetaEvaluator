@@ -503,7 +503,7 @@ def main() -> None:
             ot_meta = []
             for idx, task in enumerate(test_tasks):
                 ref_idx = int(meta_top[idx])
-                ref_distance = float(np.linalg.norm(support_targets[idx] - support_refs[ref_idx]))
+                mae = float(np.abs(meta_pred[idx] - true_meta[idx]))
                 ot_meta.append(
                     {
                         "model": task.model_name,
@@ -511,7 +511,7 @@ def main() -> None:
                         "true_accuracy": true_meta[idx],
                         "ref_index": ref_idx,
                         "ref_model": support_model_names[ref_idx],
-                        "distance": ref_distance,
+                        "mae": mae,
                     }
                 )
             ot_meta_mae = float(np.mean(np.abs(meta_pred - true_meta)))
@@ -537,7 +537,7 @@ def main() -> None:
                 for j, entry in enumerate(dev_targets):
                     _, model_name, _, true_label = entry
                     ref_idx = int(dev_top[j])
-                    ref_distance = float(np.linalg.norm(dev_target_stack[j] - dev_refs[ref_idx]))
+                    mae = float(np.abs(dev_pred[j] - true_label))
                     ot_dev.append(
                         {
                             "model": model_name,
@@ -545,7 +545,7 @@ def main() -> None:
                             "true_accuracy": true_label,
                             "ref_index": ref_idx,
                             "ref_model": dev_ref_models[ref_idx],
-                            "distance": ref_distance,
+                            "mae": mae,
                         }
                     )
                 ot_dev_mae = float(np.mean(np.abs(dev_pred - true_dev)))

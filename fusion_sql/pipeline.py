@@ -491,8 +491,12 @@ def main() -> None:
             gamma_meta = sinkhorn_plan(support_refs, support_targets, reg=args.ot_epsilon, num_iter=200)
             
             """
-            support_labels is a 1‑D array of length n_s (one label per source descriptor). barycentric_mapping expects Xt to be a 2‑D array with shape (n_s, d), so the matrix multiply gamma @ Xt works and stays 2‑D. 
-            By reshaping to support_labels[:, None] we make it (n_s, 1), which lets gamma_meta.T (shape (n_t, n_s)) produce an (n_t, 1) column of predicted labels and keeps the subsequent division by row_sums well‑shaped. 
+            support_labels is a 1‑D array of length n_s (one label per source descriptor). 
+            barycentric_mapping expects Xt to be a 2‑D array with shape (n_s, d), 
+            so the matrix multiply gamma @ Xt works and stays 2‑D. 
+            By reshaping to support_labels[:, None] we make it (n_s, 1), 
+            which lets gamma_meta.T (shape (n_t, n_s)) produce an (n_t, 1) column of 
+            predicted labels and keeps the subsequent division by row_sums well‑shaped. 
             Passing the 1‑D array directly would either error or broadcast incorrectly when divided by row_sums.
             """
             meta_pred = barycentric_mapping(gamma_meta.T, support_labels[:, None]).squeeze(-1)

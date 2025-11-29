@@ -27,7 +27,6 @@ from .evaluation import build_prediction_records
 from .generation import GenerationSettings, SQLGenerator
 from .meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescriptorTask
 from .model import FusionSQL
-from .optimal_transport import barycentric_mapping, sinkhorn_plan
 
 def clear_cuda_cache() -> None:
     gc.collect()
@@ -117,7 +116,7 @@ def parse_args() -> argparse.Namespace:
                                 ], 
                         help="Extra model ids evaluated only after meta-training.")
     parser.add_argument("--ot-epsilon", type=float, default=0.1, help="Sinkhorn epsilon for OT mapping.")
-    parser.add_argument("--ot-use-plan", type=bool, default=True, help="Use full Sinkhorn transport plan and barycentric label averaging.")
+    parser.add_argument("--ot-use-plan", type=bool, default=True, help="Use Sinkhorn OT to map held-out descriptors onto trained contexts.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size per model during embedding extraction.")
     parser.add_argument("--max-length", type=int, default=512, help="Max token length for embeddings.")
     parser.add_argument("--lora-r", type=int, default=8, help="LoRA rank (<=0 disables).")
@@ -135,6 +134,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inner-lr", type=float, default=0.01, help="Inner-loop lr.")
     parser.add_argument("--outer-lr", type=float, default=1e-3, help="Outer-loop lr.")
     parser.add_argument("--inner-steps", type=int, default=5, help="Inner updates per task.")
+    parser.add_argument("--context-dim", type=int, default=32, help="Dimensionality of the CAVIA context vector.")
     parser.add_argument("--epochs", type=int, default=500, help="Meta-training epochs.")
     parser.add_argument("--tasks-per-batch", type=int, default=4, help="Tasks per meta-batch.")
     parser.add_argument("--device", default=None, help="Torch device override.")
@@ -425,7 +425,7 @@ def main() -> None:
         train_tasks = tasks
         val_tasks = tasks
 
-    model = FusionSQL(input_dim=len(DEFAULT_FEATURE_ORDER))
+    model = FusionSQL(input_dim=len(DEFAULT_FEATURE_ORDER) + args.context_dim)
     meta_cfg = MetaLearningConfig(
         inner_lr=args.inner_lr,
         outer_lr=args.outer_lr,
@@ -434,8 +434,10 @@ def main() -> None:
         num_epochs=args.epochs,
         device=args.device,
         eval_inner_steps=args.eval_inner_steps,
+        eval_context_steps=args.eval_inner_steps,
         meta_reg_lambda=args.meta_reg_lambda,
         meta_reg_beta=args.meta_reg_beta,
+        context_dim=args.context_dim,
     )
     meta_learner = FusionSQLMetaLearner(model, meta_cfg)
 
@@ -443,10 +445,25 @@ def main() -> None:
     checkpoint_path = output_dir / "fusionsql_model.pt"
     history = meta_learner.meta_train(train_tasks, val_tasks=val_tasks, checkpoint_path=checkpoint_path)
 
-    meta_results, meta_mae = meta_learner.evaluate(tasks, return_mae=True)
+    context_bank = meta_learner.build_context_bank(train_tasks, context_steps=args.inner_steps)
+
+    meta_results, meta_mae = meta_learner.evaluate(
+        tasks,
+        context_bank=context_bank,
+        ot_reg=args.ot_epsilon,
+        adapt_context_steps=args.eval_inner_steps,
+        adapt_weight_steps=args.eval_inner_steps,
+        return_mae=True,
+    )
     print(f"[FusionSQL] Meta-test MAE: {meta_mae:.4f}")
 
-    transfer_results = meta_learner.evaluate_transfer(tasks)
+    transfer_results = meta_learner.evaluate_transfer(
+        tasks,
+        context_bank=context_bank,
+        ot_reg=args.ot_epsilon,
+        adapt_context_steps=args.eval_inner_steps,
+        adapt_weight_steps=args.eval_inner_steps,
+    )
     transfer_mae = float(np.mean([entry["mae"] for entry in transfer_results])) if transfer_results else None
     if transfer_mae is not None:
         print(f"[FusionSQL] Real-test MAE: {transfer_mae:.4f}")
@@ -478,86 +495,29 @@ def main() -> None:
         )
         _apply_descriptor_norm(test_tasks, norm_mean, norm_std)
         if args.ot_use_plan:
-            print("[FusionSQL] Using OT mapping for held-out models.")
-            support_refs = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in tasks])
-            support_labels = np.array([task.support_label.squeeze().item() for task in tasks])
-            support_model_names = [task.model_name for task in tasks]
-            dev_refs = np.stack([task.transfer_descriptor.squeeze(0).cpu().numpy() for task in tasks if task.transfer_descriptor is not None])
-            dev_labels = np.array([task.transfer_label.squeeze().item() for task in tasks if task.transfer_label is not None])
-            dev_ref_models = [task.model_name for task in tasks if task.transfer_descriptor is not None]
-
-            # Compute a single Sinkhorn transport plan from reference descriptors to the held-out descriptors
-            support_targets = np.stack([task.support_descriptor.squeeze(0).cpu().numpy() for task in test_tasks])
-            gamma_meta = sinkhorn_plan(support_refs, support_targets, reg=args.ot_epsilon, num_iter=200)
-            
-            """
-            support_labels is a 1‑D array of length n_s (one label per source descriptor). 
-            barycentric_mapping expects Xt to be a 2‑D array with shape (n_s, d), 
-            so the matrix multiply gamma @ Xt works and stays 2‑D. 
-            By reshaping to support_labels[:, None] we make it (n_s, 1), 
-            which lets gamma_meta.T (shape (n_t, n_s)) produce an (n_t, 1) column of 
-            predicted labels and keeps the subsequent division by row_sums well‑shaped. 
-            Passing the 1‑D array directly would either error or broadcast incorrectly when divided by row_sums.
-            """
-            meta_pred = barycentric_mapping(gamma_meta.T, support_labels[:, None]).squeeze(-1)
-            
-            meta_top = np.argmax(gamma_meta, axis=0)
-            true_meta = np.array([float(task.support_label.squeeze().item()) for task in test_tasks])
-
-            ot_meta = []
-            for idx, task in enumerate(test_tasks):
-                ref_idx = int(meta_top[idx])
-                mae = float(np.abs(meta_pred[idx] - true_meta[idx]))
-                ot_meta.append(
-                    {
-                        "model": task.model_name,
-                        "predicted_accuracy": float(meta_pred[idx]),
-                        "true_accuracy": true_meta[idx],
-                        "ref_index": ref_idx,
-                        "ref_model": support_model_names[ref_idx],
-                        "mae": mae,
-                    }
-                )
-            ot_meta_mae = float(np.mean(np.abs(meta_pred - true_meta)))
-
-            ot_dev = []
-            dev_targets = [
-                (
-                    idx,
-                    task.model_name,
-                    task.transfer_descriptor.squeeze(0).cpu().numpy(),
-                    float(task.transfer_label.squeeze().item()),
-                )
-                for idx, task in enumerate(test_tasks)
-                if task.transfer_descriptor is not None and task.transfer_label is not None and len(dev_refs) > 0
-            ]
-            if dev_targets:
-                dev_target_stack = np.stack([entry[2] for entry in dev_targets])
-                gamma_dev = sinkhorn_plan(dev_refs, dev_target_stack, reg=args.ot_epsilon, num_iter=200)
-                dev_pred = barycentric_mapping(gamma_dev.T, dev_labels[:, None]).squeeze(-1)
-                dev_top = np.argmax(gamma_dev, axis=0)
-                true_dev = np.array([entry[3] for entry in dev_targets])
-
-                for j, entry in enumerate(dev_targets):
-                    _, model_name, _, true_label = entry
-                    ref_idx = int(dev_top[j])
-                    mae = float(np.abs(dev_pred[j] - true_label))
-                    ot_dev.append(
-                        {
-                            "model": model_name,
-                            "predicted_accuracy": float(dev_pred[j]),
-                            "true_accuracy": true_label,
-                            "ref_index": ref_idx,
-                            "ref_model": dev_ref_models[ref_idx],
-                            "mae": mae,
-                        }
-                    )
-                ot_dev_mae = float(np.mean(np.abs(dev_pred - true_dev)))
-            else:
-                ot_dev_mae = None
-
-            save_json(output_dir / "fusionsql_test_meta_predictions_ot.json", {"results": ot_meta, "mae": ot_meta_mae})
-            save_json(output_dir / "fusionsql_test_dev_predictions_ot.json", {"results": ot_dev, "mae": ot_dev_mae})
+            print("[FusionSQL] Using OT-mapped contexts for held-out models.")
+            test_meta = meta_learner.evaluate(
+                test_tasks,
+                context_bank=context_bank,
+                ot_reg=args.ot_epsilon,
+                adapt_context_steps=args.eval_inner_steps,
+                adapt_weight_steps=args.eval_inner_steps,
+            )
+            test_dev = meta_learner.evaluate_transfer(
+                test_tasks,
+                context_bank=context_bank,
+                ot_reg=args.ot_epsilon,
+                adapt_context_steps=args.eval_inner_steps,
+                adapt_weight_steps=args.eval_inner_steps,
+            )
+            test_meta_mae = float(np.mean([entry['mae'] for entry in test_meta])) if test_meta else None
+            test_dev_mae = float(np.mean([entry['mae'] for entry in test_dev])) if test_dev else None
+            if test_meta_mae is not None:
+                print(f"[FusionSQL] Held-out Meta-test MAE: {test_meta_mae:.4f}")
+            if test_dev_mae is not None:
+                print(f"[FusionSQL] Held-out Real-test MAE: {test_dev_mae:.4f}")
+            save_json(output_dir / "fusionsql_test_meta_predictions_ot.json", {"results": test_meta, "mae": test_meta_mae})
+            save_json(output_dir / "fusionsql_test_dev_predictions_ot.json", {"results": test_dev, "mae": test_dev_mae})
         else:
             test_meta = meta_learner.evaluate(test_tasks)
             test_dev = meta_learner.evaluate_transfer(test_tasks)
@@ -565,7 +525,6 @@ def main() -> None:
             print(f"[FusionSQL] Held-out Real-test MAE: {float(np.mean([entry['mae'] for entry in test_dev])):.4f}")
             save_json(output_dir / "fusionsql_test_meta_predictions.json", {"results": test_meta})
             save_json(output_dir / "fusionsql_test_dev_predictions.json", {"results": test_dev})
-
 
 if __name__ == "__main__":
     main()

@@ -93,6 +93,12 @@ class FusionSQLMetaLearner:
     """CAVIA-style meta-learner that adapts per-task context vectors."""
 
     def __init__(self, model: FusionSQL, config: MetaLearningConfig):
+        """Initialize learner with model, config, and derived device/context settings.
+
+        Args:
+            model: FusionSQL predictor.
+            config: Meta-learning hyperparameters.
+        """
         self.cfg = config
         self.device = torch.device(
             config.device
@@ -105,17 +111,39 @@ class FusionSQLMetaLearner:
         self.ot_num_iter = max(1, int(config.ot_num_iter))
 
     def _prepare_params(self, *, detach: bool = False) -> List[torch.Tensor]:
+        """Return model parameters, optionally cloned/detached for inner-loop updates.
+
+        Args:
+            detach: Clone and detach to avoid overwriting meta-weights.
+
+        Returns:
+            List of tensors to treat as current weights.
+        """
         params = [p for p in self.model.parameter_list()]
         if detach:
             return FusionSQL.clone_parameters(params)
         return list(params)
 
     def _init_context(self) -> torch.Tensor:
+        """Create a trainable context vector or an empty tensor when disabled.
+
+        Returns:
+            Zero-initialized context of shape (context_dim,) or empty tensor.
+        """
         if self.context_dim == 0:
             return torch.zeros(0, device=self.device)
         return torch.zeros(self.context_dim, device=self.device, requires_grad=True)
 
     def _augment_with_context(self, descriptor: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        """Concatenate descriptor with context, broadcasting when needed.
+
+        Args:
+            descriptor: Descriptor tensor (batch, features).
+            context: Context vector or batch of contexts.
+
+        Returns:
+            Tensor with context appended along the last dimension.
+        """
         if self.context_dim == 0:
             return descriptor
         if context.dim() == 1:
@@ -133,6 +161,18 @@ class FusionSQLMetaLearner:
         *,
         create_graph: bool,
     ) -> torch.Tensor:
+        """Single inner update for the context vector via gradient descent.
+
+        Args:
+            params: Current model parameters.
+            descriptor: Support descriptor.
+            label: Support label.
+            context: Context vector to update.
+            create_graph: Whether to retain graph for higher-order grads.
+
+        Returns:
+            Updated context tensor.
+        """
         if self.context_dim == 0:
             return context
         preds = self.model.functional_forward(self._augment_with_context(descriptor, context), params)
@@ -157,6 +197,18 @@ class FusionSQLMetaLearner:
         *,
         create_graph: bool,
     ) -> List[torch.Tensor]:
+        """Optional adaptation of model weights alongside context updates.
+
+        Args:
+            params: Current model parameters.
+            descriptor: Descriptor used for adaptation.
+            label: Corresponding label.
+            context: Context vector used in forward pass.
+            create_graph: Whether to build higher-order gradients.
+
+        Returns:
+            New parameter list after one gradient step.
+        """
         preds = self.model.functional_forward(self._augment_with_context(descriptor, context), params)
         loss = F.mse_loss(preds, label)
         grads = torch.autograd.grad(
@@ -179,10 +231,20 @@ class FusionSQLMetaLearner:
         descriptor: torch.Tensor,
         context: torch.Tensor,
     ) -> torch.Tensor:
+        """Forward pass that appends context before scoring a descriptor.
+
+        Args:
+            params: Parameter list to use (or None for module params).
+            descriptor: Descriptor tensor.
+            context: Context vector.
+
+        Returns:
+            Predicted accuracy tensor.
+        """
         return self.model.functional_forward(self._augment_with_context(descriptor, context), params)
 
     def _kl_reg(self, tensor: torch.Tensor) -> torch.Tensor:
-        # Approximate KL(q(z|x)||N(0,I)) assuming unit variance for q: 0.5 * ||mu||^2
+        """Approximate KL(q(z|x)||N(0,I)) assuming unit variance: 0.5 * ||mu||^2."""
         return 0.5 * torch.mean(tensor ** 2)
 
     def _adapt_context(
@@ -195,6 +257,19 @@ class FusionSQLMetaLearner:
         create_graph: bool,
         context_init: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Run multiple gradient steps to adapt a context vector to a descriptor/label.
+
+        Args:
+            params: Parameters to use during adaptation.
+            descriptor: Descriptor driving adaptation.
+            label: Target label for loss.
+            steps: Number of gradient steps.
+            create_graph: Whether to keep graph for higher-order derivatives.
+            context_init: Optional starting context.
+
+        Returns:
+            Adapted context tensor.
+        """
         context = context_init if context_init is not None else self._init_context()
         if self.context_dim == 0:
             return context
@@ -216,6 +291,18 @@ class FusionSQLMetaLearner:
         ot_reg: float,
         descriptor_kind: str,
     ) -> tuple[List[int], List[np.ndarray | None]]:
+        """Map target descriptors to nearest contexts using Sinkhorn transport.
+
+        Args:
+            context_bank: Stored contexts/descriptors from training tasks.
+            tasks: Tasks to map.
+            ot_reg: Entropic regularization for Sinkhorn.
+            descriptor_kind: "query" or "transfer".
+
+        Returns:
+            (mapping, mapped_descs) where mapping gives index into context_bank and
+            mapped_descs holds barycentric descriptors or None.
+        """
         source = np.stack([entry.descriptor.squeeze(0).cpu().numpy() for entry in context_bank])
         target_desc: List[np.ndarray] = []
         valid_indices: List[int] = []
@@ -245,6 +332,16 @@ class FusionSQLMetaLearner:
         val_tasks: Sequence[ShiftDescriptorTask] | None = None,
         checkpoint_path: Path | None = None,
     ) -> List[float]:
+        """Meta-train the model with inner-loop context adaptation and optional validation.
+
+        Args:
+            tasks: Training tasks.
+            val_tasks: Optional validation tasks.
+            checkpoint_path: Where to store the best model.
+
+        Returns:
+            List of meta-loss values per epoch.
+        """
         if not tasks:
             raise ValueError("Meta-training requires at least one task.")
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.outer_lr)
@@ -314,6 +411,21 @@ class FusionSQLMetaLearner:
         adapt_descriptor: torch.Tensor | None = None,
         adapt_label: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Evaluate a single task with optional OT-initialized context and weight adaptation.
+
+        Args:
+            task: Task to score.
+            context_init: Optional starting context (e.g., OT mapped).
+            adapt_context_steps: Number of context updates.
+            adapt_weight_steps: Number of weight updates.
+            target_descriptor: Descriptor used for prediction.
+            target_label: Target label for loss/metrics.
+            adapt_descriptor: Optional descriptor for adaptation (defaults to support).
+            adapt_label: Optional label for adaptation.
+
+        Returns:
+            Predicted accuracy tensor for the target descriptor.
+        """
         base_params = self._prepare_params(detach=True)
         context = context_init if context_init is not None else self._init_context()
         context = context.to(self.device)
@@ -354,6 +466,15 @@ class FusionSQLMetaLearner:
         *,
         context_steps: int | None = None,
     ) -> List[TaskContextEmbedding]:
+        """Adapt contexts for each training task to seed later OT mappings.
+
+        Args:
+            tasks: Training tasks.
+            context_steps: Steps per context adaptation (defaults to inner_steps).
+
+        Returns:
+            List of TaskContextEmbedding entries.
+        """
         steps = context_steps if context_steps is not None else self.cfg.inner_steps
         bank: List[TaskContextEmbedding] = []
         base_params = self._prepare_params(detach=True)
@@ -384,6 +505,19 @@ class FusionSQLMetaLearner:
         adapt_weight_steps: int | None = None,
         return_mae: bool = False,
     ) -> List[dict] | tuple[List[dict], float]:
+        """Evaluate tasks on meta-test descriptors, optionally reusing a context bank.
+
+        Args:
+            tasks: Tasks to evaluate.
+            context_bank: Optional bank for OT-based initialization.
+            ot_reg: Entropic regularization for OT.
+            adapt_context_steps: Context steps at eval.
+            adapt_weight_steps: Weight steps at eval.
+            return_mae: Whether to also return mean MAE.
+
+        Returns:
+            List of dict results, optionally paired with mean MAE.
+        """
         results: List[dict] = []
         tasks_list = list(tasks)
 
@@ -456,6 +590,18 @@ class FusionSQLMetaLearner:
         adapt_context_steps: int | None = None,
         adapt_weight_steps: int | None = None,
     ) -> List[dict]:
+        """Evaluate held-out transfer descriptors (e.g., real dev/test accuracy).
+
+        Args:
+            tasks: Tasks to evaluate on transfer descriptors.
+            context_bank: Optional bank for OT-based initialization.
+            ot_reg: Entropic regularization for OT.
+            adapt_context_steps: Context steps at eval.
+            adapt_weight_steps: Weight steps at eval.
+
+        Returns:
+            List of dict results containing predictions and MAE.
+        """
         results: List[dict] = []
         tasks_list = list(tasks)
 

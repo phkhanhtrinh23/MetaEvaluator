@@ -29,12 +29,25 @@ from .meta_learning import FusionSQLMetaLearner, MetaLearningConfig, ShiftDescri
 from .model import FusionSQL
 
 def clear_cuda_cache() -> None:
+    """Free Python and CUDA caches to avoid OOM between stages.
+
+    Returns:
+        None
+    """
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 
 def _compute_descriptor_stats(tasks: Sequence[ShiftDescriptorTask]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute mean/std across all descriptors to normalize features consistently.
+
+    Args:
+        tasks: Tasks whose descriptors provide statistics.
+
+    Returns:
+        (mean, std) tensors shaped like a single descriptor.
+    """
     tensors = []
     for task in tasks:
         tensors.append(task.support_descriptor)
@@ -48,6 +61,13 @@ def _compute_descriptor_stats(tasks: Sequence[ShiftDescriptorTask]) -> tuple[tor
 
 
 def _apply_descriptor_norm(tasks: Sequence[ShiftDescriptorTask], mean: torch.Tensor, std: torch.Tensor) -> None:
+    """Normalize task descriptors in-place using provided statistics.
+
+    Args:
+        tasks: Tasks to normalize.
+        mean: Descriptor mean.
+        std: Descriptor standard deviation (non-zero).
+    """
     for task in tasks:
         task.support_descriptor.sub_(mean).div_(std)
         task.query_descriptor.sub_(mean).div_(std)
@@ -56,6 +76,14 @@ def _apply_descriptor_norm(tasks: Sequence[ShiftDescriptorTask], mean: torch.Ten
 
 
 def _parse_model_entry(raw: str) -> ModelSpec:
+    """Parse optional alias and remote flag from a model string.
+
+    Args:
+        raw: CLI model spec (alias=model_id or model_id[:remote]).
+
+    Returns:
+        A ModelSpec with alias populated when provided.
+    """
     alias = None
     entry = raw
     if "=" in raw:
@@ -66,12 +94,25 @@ def _parse_model_entry(raw: str) -> ModelSpec:
 
 
 def parse_model_specs(raw_list: Sequence[str] | None) -> List[ModelSpec]:
+    """Convert CLI model strings into ModelSpec objects, or use defaults.
+
+    Args:
+        raw_list: Optional sequence of model strings.
+
+    Returns:
+        Parsed model specs or the default catalog.
+    """
     if raw_list:
         return [_parse_model_entry(entry) for entry in raw_list]
     return default_model_specs()
 
 
 def parse_args() -> argparse.Namespace:
+    """Build CLI for the FusionSQL pipeline and return parsed args.
+
+    Returns:
+        Parsed argparse Namespace.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-path", default="data/sft_spider_train_text2sql.json", help="Path to training JSON.")
     parser.add_argument("--dev-path", default="data/sft_spider_dev_text2sql.json", help="Path to dev/test JSON.")
@@ -166,6 +207,22 @@ def build_tasks(
     dev_key: str,
     num_projections: int,
 ) -> List[ShiftDescriptorTask]:
+    """Construct per-model meta-learning tasks from cached descriptors and accuracy labels.
+
+    Args:
+        models: Model specs used to fetch embeddings and labels.
+        splits: Prompt splits for meta-train/val/test.
+        dev_split: Dev prompts treated as real test.
+        cache: Embedding cache for descriptor construction.
+        accuracy: Source mapping model -> accuracy.
+        meta_val_key: Key to pull validation accuracy.
+        meta_test_key: Key to pull meta-test accuracy.
+        dev_key: Key to pull dev accuracy.
+        num_projections: Projection count for SWD descriptors.
+
+    Returns:
+        List of per-model ShiftDescriptorTask entries.
+    """
     tasks: List[ShiftDescriptorTask] = []
     for model in tqdm(models, desc="Build tasks", leave=False):
         model_name = model.alias or model.model_id
@@ -220,17 +277,40 @@ def build_tasks(
 
 
 def save_json(path: Path, payload: Dict) -> None:
+    """Persist a JSON payload, ensuring parent directories exist.
+
+    Args:
+        path: Destination file path.
+        payload: Serializable object to dump.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
 
 def sanitize_model_name(spec: ModelSpec) -> str:
+    """Create a filesystem-safe model identifier.
+
+    Args:
+        spec: Model spec.
+
+    Returns:
+        Alias/model id with slashes replaced by dashes.
+    """
     alias = spec.alias or spec.model_id
     return alias.replace("/", "-")
 
 
 def create_dev_split(prompts: List[str], samples: List[dict]) -> PromptSplit:
+    """Package dev prompts into a PromptSplit with aligned indices.
+
+    Args:
+        prompts: Rendered prompts.
+        samples: Original dataset entries aligned to prompts.
+
+    Returns:
+        A PromptSplit named "dev".
+    """
     indices = list(range(len(prompts)))
     return PromptSplit(name="dev", prompts=prompts, indices=indices, samples=samples)
 
@@ -243,6 +323,18 @@ def evaluate_split_predictions(
     *,
     db_root: Path | None = None,
 ) -> Dict[str, float]:
+    """Generate SQL for a split and write metrics/predictions to disk.
+
+    Args:
+        generator: SQLGenerator instance.
+        split: PromptSplit to evaluate.
+        output_root: Directory to store split JSON.
+        model_name: Human-readable model identifier.
+        db_root: Optional DB path for execution evaluation.
+
+    Returns:
+        Metrics dictionary (including execution_accuracy).
+    """
     preds = generator.generate(split.prompts)
     metrics, records = build_prediction_records(split.samples, preds, split.indices, db_root=db_root)
     payload = {
@@ -257,6 +349,16 @@ def evaluate_split_predictions(
 
 
 def maybe_load_cached_metrics(model_dir: Path, split_name: str, expected_samples: int) -> Dict[str, float] | None:
+    """Return cached metrics when prediction count matches expectation.
+
+    Args:
+        model_dir: Directory containing cached split JSON.
+        split_name: Split identifier (e.g., meta_val).
+        expected_samples: Number of samples to validate cache.
+
+    Returns:
+        Metrics dict if cache is valid, otherwise None.
+    """
     path = model_dir / f"{split_name}.json"
     if not path.exists():
         return None
@@ -294,6 +396,24 @@ def run_inference_for_models(
     lora_r: int | None = None,
     db_root: Path | None = None,
 ) -> Dict[str, Dict[str, float]]:
+    """Run SQL generation for all requested models and aggregate accuracy.
+
+    Args:
+        models: Model specs to evaluate.
+        splits: Meta splits.
+        dev_split: Dev split treated as real test.
+        output_dir: Root directory for prediction artifacts.
+        gen_settings: Decoding hyperparameters.
+        device: Torch device override.
+        meta_val_key: Accuracy key for meta validation.
+        meta_test_key: Accuracy key for meta testing.
+        dev_key: Accuracy key for real dev/test.
+        lora_r: Optional LoRA rank for generation.
+        db_root: Optional DB root for exec evaluation.
+
+    Returns:
+        Nested dict mapping model -> {split_key: execution_accuracy}.
+    """
     predictions_root = output_dir / "predictions"
     predictions_root.mkdir(parents=True, exist_ok=True)
     accuracy_summary: Dict[str, Dict[str, float]] = {}
@@ -335,6 +455,11 @@ def run_inference_for_models(
 
 
 def main() -> None:
+    """Entry point: run generation, build tasks, train meta-learner, and evaluate.
+
+    Returns:
+        None
+    """
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

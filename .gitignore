@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 outputs/visualization/*
 outputs/fusion_sql/embeddings/*
+shift_predictor/__pycache__

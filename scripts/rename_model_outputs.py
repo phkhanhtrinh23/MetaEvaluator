@@ -66,8 +66,8 @@ def migrate_outputs(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default="outputs/fusionsql", help="Root folder containing predictions/ and metrics files.")
-    parser.add_argument("--embedding-dir", default="outputs/fusionsql/embeddings", help="Embedding cache folder (if present).")
+    parser.add_argument("--output-dir", default="outputs/meta_evaluator", help="Root folder containing predictions/ and metrics files.")
+    parser.add_argument("--embedding-dir", default="outputs/meta_evaluator/embeddings", help="Embedding cache folder (if present).")
     parser.add_argument("--model-ids", nargs="*", default=[
             # Llama 3.2 family (Meta)
             # "meta-llama/Llama-3.2-1B",

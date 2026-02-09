@@ -283,7 +283,7 @@ Transfer: ImageNet -> ImageNet-R (unseen pool disjoint)
 
 Transfer: CIFAR-10 -> CIFAR-10-C (unseen pool disjoint)
 
-| Methods | ResNet-20 (CIFAR) | ResNet-56 (CIFAR) | ResNet-110 (CIFAR) | DenseNet-BC-100 (CIFAR) | MobileNetV2 (CIFAR) | Avg. |
+| Methods | ResNet-20 | ResNet-56 | ResNet-110 | DenseNet-BC-100 | MobileNetV2 | Avg. |
 | --- | --- | --- | --- | --- | --- | --- |
 | DoC | 13.98 +- 2.42 | 14.32 +- 2.55 | 14.61 +- 2.38 | 14.21 +- 2.47 | 14.47 +- 2.60 | 14.32 +- 2.48 |
 | ATC | 12.74 +- 2.54 | 13.07 +- 2.67 | 13.36 +- 2.50 | 12.96 +- 2.59 | 13.23 +- 2.72 | 13.07 +- 2.60 |
@@ -293,7 +293,7 @@ Transfer: CIFAR-10 -> CIFAR-10-C (unseen pool disjoint)
 | SelfTrainEns | <u>6.01 +- 2.02</u> | <u>6.24 +- 2.10</u> | <u>6.48 +- 1.96</u> | <u>6.10 +- 2.04</u> | <u>6.32 +- 2.11</u> | <u>6.23 +- 2.05</u> |
 | **MetaEvaluator (Ours)** | **3.81 +- 0.99** | **4.05 +- 1.07** | **4.22 +- 0.93** | **3.93 +- 1.01** | **4.11 +- 1.10** | **4.02 +- 1.02** |
 
-Transfer: STL-10 -> TinyImageNet (unseen pool disjoint)
+Transfer: CIFAR-10 -> TinyImageNet (unseen pool disjoint)
 
 | Methods | VGG-13 | WideResNet-40-4 | DenseNet-169 | ShuffleNet-V2-1.0x | EfficientNet-B0 | Avg. |
 | --- | --- | --- | --- | --- | --- | --- |

@@ -2,6 +2,8 @@
 
 > Recent progress in machine learning is driven by large pretrained model families and rapidly growing datasets, most of which remain unlabeled. This creates a practical deployment problem: how to choose among newly released models for an unlabeled workload. For example, a company deploying a new Text-to-SQL model for an internal database often has no labeled question-SQL pairs. Manual labeling is slow and costly, and per-model evaluation pipelines do not scale. MetaEvaluator asks a simple question: can we evaluate unseen models on unlabeled data by transferring knowledge from previously evaluated models? The answer, supported by our experiments, is yes.
 
+![MetaEvaluator Training Pipeline](resources/training_pipeline.png)
+
 ## Repository Layout
 
 - `shift_descriptor/` computes distribution shift descriptors from train and test embeddings.
@@ -23,8 +25,8 @@ This pipeline extracts pooled embeddings from lightweight Hugging Face LLMs on T
 
 ```bash
 python -m shift_descriptor.pipeline \
-  --train-path data/sft_spider_train_text2sql.json \
-  --test-path data/sft_spider_dev_text2sql.json \
+  --train-path data/<train_filename>.json \
+  --test-path data/<test_filename>.json \
   --output-dir outputs
 ```
 

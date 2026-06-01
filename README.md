@@ -1,3 +1,7 @@
+[![arXiv](https://img.shields.io/badge/arXiv-2605.23595-b31b1b.svg)](https://arxiv.org/abs/2605.23595)
+![visitors](https://visitor-badge.laobi.icu/badge?page_id=phkhanhtrinh23.MetaEvaluator)
+<img src="https://img.shields.io/badge/Contributions-Welcome-278ea5" alt="Contrib"/>
+
 # MetaEvaluator
 
 > Recent progress in machine learning is driven by large pretrained model families and rapidly growing datasets, most of which remain unlabeled. This creates a practical deployment problem: how to choose among newly released models for an unlabeled workload. For example, a company deploying a new Text-to-SQL model for an internal database often has no labeled question-SQL pairs. Manual labeling is slow and costly, and per-model evaluation pipelines do not scale. MetaEvaluator asks a simple question: can we evaluate unseen models on unlabeled data by transferring knowledge from previously evaluated models? The answer, supported by our experiments, is yes.
@@ -327,3 +331,9 @@ python -m meta_evaluator.pipeline \
 Encoder-decoder Text2SQL models (T5/BART/PICARD/CodeT5p) and structured parsers (RAT-SQL, LGESQL, SmBoP) require custom inference wrappers. To include them in MetaEvaluator, run their generation and execution accuracy separately and then plug the accuracy map into the pipeline by extending `run_inference_for_models` or loading a precomputed `model_accuracies.json`.
 
 For image classification backbones listed above, standard PyTorch loaders (for example, `torchvision.models.resnet50(weights="DEFAULT")` or `timm.create_model("vit_tiny_patch16_224", pretrained=True)`) can be used to produce embeddings and descriptors in a vision-oriented pipeline.
+
+
+-----------
+**Backup Statistics**
+
+![Visitors](https://margherita-gustatory-zane.ngrok-free.dev/badge/phkhanhtrinh23%2FMetaEvaluator.svg?ngrok-skip-browser-warning=true)
